@@ -12,5 +12,6 @@ venv/
 data/price/*.parquet
 data/prompts/*.txt
 data/research_*.json
+signals/*.json
 *.log
 .DS_Store
