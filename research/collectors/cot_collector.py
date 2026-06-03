@@ -22,6 +22,13 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60  # large file (~30MB)
+
+# CFTC has reorganised its download paths over the years; try all known patterns
+_COT_URL_TEMPLATES = [
+    "https://www.cftc.gov/dta/cos/current/fut_disagg_txt_{year}.zip",
+    "https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip",
+    "https://www.cftc.gov/dea/newcot/fut_disagg_txt_{year}.zip",
+]
 _CACHE_MAX_AGE_DAYS = 7
 
 # Managed Money column names in the CFTC disaggregated CSV
@@ -66,22 +73,24 @@ def _cache_valid() -> bool:
 
 
 def _download_cot(year: int) -> pd.DataFrame | None:
-    url = f"https://www.cftc.gov/dta/cos/current/fut_disagg_txt_{year}.zip"
-    try:
-        logger.info("Downloading COT data from %s", url)
-        resp = requests.get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            txt_files = [f for f in zf.namelist() if f.lower().endswith((".txt", ".csv"))]
-            if not txt_files:
-                logger.warning("No text files found in COT zip")
-                return None
-            with zf.open(txt_files[0]) as f:
-                df = pd.read_csv(f, low_memory=False)
-        return df
-    except Exception as exc:
-        logger.warning("COT download failed for year %d: %s", year, exc)
-        return None
+    for template in _COT_URL_TEMPLATES:
+        url = template.format(year=year)
+        try:
+            logger.info("Downloading COT data from %s", url)
+            resp = requests.get(url, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                txt_files = [f for f in zf.namelist() if f.lower().endswith((".txt", ".csv"))]
+                if not txt_files:
+                    logger.warning("No text files found in COT zip")
+                    continue
+                with zf.open(txt_files[0]) as f:
+                    df = pd.read_csv(f, low_memory=False)
+            return df
+        except Exception as exc:
+            logger.debug("COT URL failed (%s): %s", url, exc)
+    logger.warning("COT download failed for year %d (tried %d URL patterns)", year, len(_COT_URL_TEMPLATES))
+    return None
 
 
 def _load_raw() -> pd.DataFrame | None:
@@ -93,15 +102,12 @@ def _load_raw() -> pd.DataFrame | None:
             logger.warning("COT cache read failed: %s", exc)
 
     current_year = datetime.now().year
-    df = _download_cot(current_year)
-
-    # If current year file has fewer than 8 weeks, supplement with previous year
-    if df is not None and _DATE_COL in df.columns and len(df[_NAME_COL].unique()) > 0:
-        pass  # got data
-
-    if df is None:
-        logger.warning("Trying previous year COT file")
-        df = _download_cot(current_year - 1)
+    df = None
+    for year in range(current_year, current_year - 3, -1):
+        df = _download_cot(year)
+        if df is not None:
+            break
+        logger.info("COT data unavailable for %d, trying previous year", year)
 
     if df is not None:
         try:

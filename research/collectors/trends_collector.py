@@ -14,6 +14,25 @@ import pandas as pd
 
 from config import settings
 
+
+def _patch_urllib3_retry() -> None:
+    """Translate method_whitelist → allowed_methods for urllib3 >= 2.0 compatibility."""
+    try:
+        import urllib3.util.retry as _retry_mod
+        _orig_init = _retry_mod.Retry.__init__
+
+        def _patched_init(self, *args, **kwargs):  # type: ignore[override]
+            if "method_whitelist" in kwargs:
+                kwargs.setdefault("allowed_methods", kwargs.pop("method_whitelist"))
+            _orig_init(self, *args, **kwargs)
+
+        _retry_mod.Retry.__init__ = _patched_init  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+
+_patch_urllib3_retry()
+
 logger = logging.getLogger(__name__)
 
 KEYWORDS = ["Bitcoin", "recession", "gold price", "stock market crash", "inflation"]
