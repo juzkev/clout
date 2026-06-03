@@ -24,10 +24,9 @@ _HEADERS = {
     )
 }
 
-# Forex Factory unofficial JSON endpoints
+# Forex Factory data via nfs.faireconomy.media mirror (thisweek only — no next-week feed exists)
 _FF_URLS = [
     "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
 ]
 
 # High-impact event title keywords and the universe tickers they affect
@@ -91,13 +90,6 @@ def _collect_economic_events(days_ahead: int = 7) -> list[dict[str, Any]]:
             resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
             resp.raise_for_status()
             items = resp.json()
-        except requests.exceptions.HTTPError as exc:
-            # nextweek.json returns 404 until Thursday — not a true failure
-            if exc.response is not None and exc.response.status_code == 404:
-                logger.debug("Forex Factory calendar not yet published (%s)", url)
-            else:
-                logger.warning("Forex Factory fetch failed (%s): %s", url, exc)
-            continue
         except Exception as exc:
             logger.warning("Forex Factory fetch failed (%s): %s", url, exc)
             continue
