@@ -136,7 +136,7 @@ SAMPLE_TRENDS = {
 SAMPLE_COT = {
     "gold": {
         "label": "Gold (GC)", "latest_date": "240112", "weeks_of_history": 26,
-        "mm_longs": 180000, "mm_shorts": 60000, "net_spec_position": 120000,
+        "spec_longs": 180000, "spec_shorts": 60000, "net_spec_position": 120000,
         "net_spec_percentile": 82.0, "interpretation": "extreme_longs_contrarian_bearish",
         "affected_tickers": ["GLD"],
     }
