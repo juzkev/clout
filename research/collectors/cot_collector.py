@@ -23,11 +23,12 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60  # large file (~30MB)
 
-# CFTC has reorganised its download paths over the years; try all known patterns
+# Source: https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm
+# Primary path is /files/dea/history/; others kept as fallback in case CFTC reorganises again
 _COT_URL_TEMPLATES = [
-    "https://www.cftc.gov/dta/cos/current/fut_disagg_txt_{year}.zip",
     "https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip",
     "https://www.cftc.gov/dea/newcot/fut_disagg_txt_{year}.zip",
+    "https://www.cftc.gov/dta/cos/current/fut_disagg_txt_{year}.zip",
 ]
 _CACHE_MAX_AGE_DAYS = 7
 
