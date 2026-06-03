@@ -1,0 +1,36 @@
+[project]
+name = "clout"
+version = "0.1.0"
+description = "Daily trading research pipeline: macro + sentiment + crypto + price → LLM trade ideas"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "yfinance>=0.2.40",
+    "pyarrow>=14.0.0",
+    "python-dotenv>=1.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "openai>=1.30.0",
+    "anthropic>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+]
+ibkr = [
+    # "ib_insync>=0.9.86",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+]

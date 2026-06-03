@@ -27,7 +27,12 @@ notifications/          # Telegram bot (stub)
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtualenv + install all dependencies
+uv sync
+
 cp config/.env.example .env
 # Edit .env — all keys are optional; system degrades gracefully without them
 ```
@@ -35,7 +40,7 @@ cp config/.env.example .env
 ## Running
 
 ```bash
-python -m research.run_research
+uv run python -m research.run_research
 ```
 
 With `LLM_PROVIDER=manual` (default):
@@ -66,7 +71,7 @@ Every component handles missing keys or network failures without crashing:
 ## Running Tests
 
 ```bash
-python -m pytest -q
+uv run pytest -q
 ```
 
 All tests run offline with no API keys required.

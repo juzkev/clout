@@ -16,24 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --frozen --all-extras
 
       - name: Run tests
-        run: python -m pytest -q --tb=short
+        run: uv run pytest -q --tb=short
         env:
           FRED_API_KEY: ""
           NEWSAPI_KEY: ""
@@ -43,7 +36,7 @@ jobs:
 
       - name: Import smoke test
         run: |
-          python -c "
+          uv run python -c "
           import config.settings
           import research.run_research
           import strategies.momentum
