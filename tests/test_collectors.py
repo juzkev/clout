@@ -77,8 +77,12 @@ def test_ls_interpretation_values():
 
 # ── News collector ────────────────────────────────────────────────────────────
 
-def test_news_no_key_returns_empty_lists():
+def test_news_no_network_returns_empty_lists(monkeypatch):
+    """All RSS feeds blocked → collect() returns empty lists per bucket without raising."""
+    import requests
     from research.collectors import news_collector
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("no network")))
     result = news_collector.collect()
     assert isinstance(result, dict)
     for bucket in ("macro", "crypto", "commodity"):

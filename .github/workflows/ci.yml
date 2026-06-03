@@ -29,7 +29,6 @@ jobs:
         run: uv run pytest -q --tb=short
         env:
           FRED_API_KEY: ""
-          NEWSAPI_KEY: ""
           DEEPSEEK_API_KEY: ""
           CLAUDE_API_KEY: ""
 

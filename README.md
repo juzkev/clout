@@ -12,7 +12,7 @@ research/
     fred_collector      # FRED macro data (T10Y2Y, VIX, CPI, FEDFUNDS, …)
     sentiment_collector # CNN F&G, AAII Survey, Crypto F&G
     crypto_collector    # Binance Futures + Bybit public APIs (no key) → CoinGecko spot
-    news_collector      # NewsAPI — macro/crypto/commodity headlines
+    news_collector      # Google News RSS + CoinDesk/CoinTelegraph RSS (no key)
     price_collector     # yfinance OHLCV + RSI/vol/SMA/momentum rank
   prompt_builder.py     # Assembles collector outputs into LLM prompt
   llm_client.py         # Pluggable: manual | deepseek | claude

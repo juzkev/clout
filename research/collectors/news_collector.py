@@ -1,70 +1,101 @@
-"""News headline collector using NewsAPI.
+"""News headline collector using free RSS feeds — no API key required.
 
-Queries three topic buckets over the last 24 hours, top 5 English results each.
-Returns empty lists with a warning when NEWSAPI_KEY is missing.
+Sources:
+  Google News RSS   — macro and commodity queries (real-time, no key, no cap)
+  CoinDesk RSS      — crypto news
+  CoinTelegraph RSS — crypto news
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import feedparser
 import requests
-
-from config import settings
 
 logger = logging.getLogger(__name__)
 
-NEWSAPI_BASE = "https://newsapi.org/v2/everything"
+_TIMEOUT = 15
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
 
-QUERIES: dict[str, str] = {
-    "macro": "Federal Reserve OR inflation OR recession OR interest rates",
-    "crypto": "Bitcoin OR cryptocurrency OR crypto",
-    "commodity": "gold OR commodities OR oil OR energy",
+_GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?hl=en-US&gl=US&ceid=US:en&q={query}"
+
+SOURCES: dict[str, list[dict[str, str]]] = {
+    "macro": [
+        {
+            "url": _GOOGLE_NEWS_RSS.format(
+                query="Federal+Reserve+OR+inflation+OR+recession+OR+interest+rates"
+            ),
+            "name": "Google News",
+        }
+    ],
+    "crypto": [
+        {"url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "name": "CoinDesk"},
+        {"url": "https://cointelegraph.com/rss", "name": "CoinTelegraph"},
+    ],
+    "commodity": [
+        {
+            "url": _GOOGLE_NEWS_RSS.format(
+                query="gold+OR+oil+OR+commodities+OR+energy+OR+natural+gas"
+            ),
+            "name": "Google News",
+        }
+    ],
 }
 
 
-def _fetch_headlines(query: str, api_key: str, top_n: int = 5) -> list[dict[str, str]]:
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    params = {
-        "q": query,
-        "from": since,
-        "sortBy": "relevancy",
-        "language": "en",
-        "pageSize": top_n,
-        "apiKey": api_key,
-    }
-    resp = requests.get(NEWSAPI_BASE, params=params, timeout=15)
+def _fetch_feed(url: str, source_name: str, top_n: int = 5) -> list[dict[str, str]]:
+    """Fetch an RSS feed and return up to top_n items."""
+    resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
     resp.raise_for_status()
-    articles = resp.json().get("articles", [])
-    return [
-        {
-            "title": a.get("title", ""),
-            "source": a.get("source", {}).get("name", ""),
-            "publishedAt": a.get("publishedAt", ""),
-            "url": a.get("url", ""),
-        }
-        for a in articles[:top_n]
-    ]
+    feed = feedparser.parse(resp.text)
+
+    items = []
+    for entry in feed.entries[:top_n]:
+        # Google News embeds the real source in entry.source.title
+        source = getattr(getattr(entry, "source", None), "title", None) or source_name
+        items.append({
+            "title": entry.get("title", ""),
+            "source": source,
+            "publishedAt": entry.get("published", ""),
+            "url": entry.get("link", ""),
+        })
+    return items
 
 
-def collect() -> dict[str, list[dict[str, str]]]:
-    """Collect news headlines. Returns empty lists with warning if no API key."""
-    if not settings.NEWSAPI_KEY:
-        logger.warning("NEWSAPI_KEY not set — skipping news collection")
-        return {key: [] for key in QUERIES}
+def _collect_bucket(bucket: str, top_n: int = 5) -> list[dict[str, str]]:
+    """Collect headlines for one bucket, merging multiple sources if configured."""
+    seen_titles: set[str] = set()
+    results: list[dict[str, str]] = []
 
-    results: dict[str, list[dict[str, str]]] = {}
-    for bucket, query in QUERIES.items():
+    for source_cfg in SOURCES[bucket]:
         try:
-            results[bucket] = _fetch_headlines(query, settings.NEWSAPI_KEY)
+            items = _fetch_feed(source_cfg["url"], source_cfg["name"], top_n=top_n)
+            for item in items:
+                title_key = item["title"].lower()[:60]
+                if title_key not in seen_titles:
+                    seen_titles.add(title_key)
+                    results.append(item)
+                    if len(results) >= top_n:
+                        return results
         except Exception as exc:
-            logger.warning("NewsAPI fetch failed for bucket '%s': %s", bucket, exc)
-            results[bucket] = []
+            logger.warning("RSS fetch failed for %s (%s): %s", bucket, source_cfg["name"], exc)
 
     return results
 
 
+def collect() -> dict[str, list[dict[str, str]]]:
+    """Collect news headlines from RSS feeds for all three buckets."""
+    return {bucket: _collect_bucket(bucket) for bucket in SOURCES}
+
+
 if __name__ == "__main__":
     import json
+    from config import settings
     settings.configure_logging()
     print(json.dumps(collect(), indent=2))
