@@ -36,6 +36,26 @@ def test_sentiment_returns_three_keys(monkeypatch):
         assert v is None
 
 
+def test_aaii_regex_parses_percentages():
+    """Layout-agnostic AAII fallback extracts the three readings from arbitrary HTML."""
+    from research.collectors.sentiment_collector import _parse_aaii_regex
+
+    html = """
+        <div class="row"><span>Bullish</span><span>35.2%</span></div>
+        <div class="row"><span>Neutral</span><span>30.8%</span></div>
+        <div class="row"><span>Bearish</span><span>34.0%</span></div>
+    """
+    result = _parse_aaii_regex(html)
+    assert result["bullish_pct"] == 35.2
+    assert result["neutral_pct"] == 30.8
+    assert result["bearish_pct"] == 34.0
+
+
+def test_aaii_regex_no_match_returns_empty():
+    from research.collectors.sentiment_collector import _parse_aaii_regex
+    assert _parse_aaii_regex("<html>login required</html>") == {}
+
+
 # ── Crypto collector ──────────────────────────────────────────────────────────
 
 def test_crypto_no_network_returns_dict(monkeypatch):
