@@ -40,7 +40,6 @@ LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "manual")  # "manual" | "deepseek"
 
 FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
 NEWSAPI_KEY: str = os.getenv("NEWSAPI_KEY", "")
-COINGLASS_API_KEY: str = os.getenv("COINGLASS_API_KEY", "")
 DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 CLAUDE_API_KEY: str = os.getenv("CLAUDE_API_KEY", "")
 

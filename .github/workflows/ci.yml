@@ -30,7 +30,6 @@ jobs:
         env:
           FRED_API_KEY: ""
           NEWSAPI_KEY: ""
-          COINGLASS_API_KEY: ""
           DEEPSEEK_API_KEY: ""
           CLAUDE_API_KEY: ""
 

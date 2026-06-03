@@ -38,15 +38,16 @@ def test_sentiment_returns_three_keys(monkeypatch):
 
 # ── Crypto collector ──────────────────────────────────────────────────────────
 
-def test_crypto_no_key_uses_coingecko(monkeypatch):
-    """No Coinglass key → falls through to CoinGecko branch (may fail network, still no exception)."""
+def test_crypto_no_network_returns_dict(monkeypatch):
+    """All exchange endpoints blocked → collect() returns a dict without raising."""
     import requests
     from research.collectors import crypto_collector
 
     monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("no network")))
     result = crypto_collector.collect()
-    # Returns empty dict (CoinGecko also failed), but no exception raised
     assert isinstance(result, dict)
+    # sources key always present
+    assert "sources" in result
 
 
 def test_funding_interpretation_values():

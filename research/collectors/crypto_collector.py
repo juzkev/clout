@@ -1,7 +1,13 @@
 """Crypto derivatives and market data collector.
 
-Primary source: Coinglass v2 API (requires COINGLASS_API_KEY).
-Fallback:       CoinGecko free API (no key required).
+Pulls directly from exchange public APIs — no API key required.
+
+Primary sources:
+  Binance Futures  — funding rate, open interest, long/short ratio
+  Bybit            — funding rate, open interest, long/short ratio (averaged with Binance)
+
+Fallback:
+  CoinGecko free API — spot price and 24h/7d change
 
 Every numeric field is paired with a human-readable interpretation hint,
 e.g. {"btc_funding_rate": 0.03, "funding_interpretation": "elevated_longs_bearish"}.
@@ -12,17 +18,16 @@ from typing import Any
 
 import requests
 
-from config import settings
-
 logger = logging.getLogger(__name__)
 
-_COINGLASS_BASE = "https://open-api.coinglass.com/public/v2"
+_BINANCE_BASE = "https://fapi.binance.com"
+_BYBIT_BASE = "https://api.bybit.com/v5"
 _COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-FUNDING_EXCHANGES = ["Binance", "Bybit", "OKX"]
+_TIMEOUT = 15
 
 
-# ── Interpretation helpers ─────────────────────────────────────────────────────
+# ── Interpretation helpers ────────────────────────────────────────────────────
 
 def _funding_interpretation(rate: float) -> str:
     if rate > 0.05:
@@ -60,185 +65,169 @@ def _ls_interpretation(ratio: float) -> str:
     return "shorts_dominant_crowded"
 
 
-# ── Coinglass ─────────────────────────────────────────────────────────────────
+# ── Binance Futures ───────────────────────────────────────────────────────────
 
-def _coinglass_headers() -> dict[str, str]:
-    return {"coinglassSecret": settings.COINGLASS_API_KEY}
-
-
-def _fetch_funding_rate() -> dict[str, Any] | None:
-    """Average BTC funding rate across major exchanges."""
+def _binance_funding_rate() -> float | None:
+    """Current BTC/USDT perpetual funding rate from Binance."""
     try:
-        url = f"{_COINGLASS_BASE}/funding_rate_history"
         resp = requests.get(
-            url,
-            headers=_coinglass_headers(),
-            params={"symbol": "BTC", "interval": "8h", "limit": 1},
-            timeout=15,
+            f"{_BINANCE_BASE}/fapi/v1/premiumIndex",
+            params={"symbol": "BTCUSDT"},
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if not data:
-            return None
-
-        # data is a list of exchange entries
-        rates = []
-        for entry in data:
-            exch = entry.get("exchangeName", "")
-            if exch in FUNDING_EXCHANGES:
-                rate = entry.get("fundingRate")
-                if rate is not None:
-                    rates.append(float(rate))
-
-        if not rates:
-            return None
-
-        avg = round(sum(rates) / len(rates), 6)
-        return {
-            "btc_funding_rate": avg,
-            "funding_interpretation": _funding_interpretation(avg),
-            "exchanges_sampled": FUNDING_EXCHANGES,
-        }
+        return float(resp.json()["lastFundingRate"])
     except Exception as exc:
-        logger.warning("Coinglass funding rate fetch failed: %s", exc)
+        logger.warning("Binance funding rate failed: %s", exc)
         return None
 
 
-def _fetch_open_interest() -> dict[str, Any] | None:
+def _binance_open_interest() -> dict[str, Any] | None:
+    """BTC open interest + 24h change from Binance."""
     try:
-        url = f"{_COINGLASS_BASE}/open_interest"
-        resp = requests.get(
-            url,
-            headers=_coinglass_headers(),
-            params={"symbol": "BTC"},
-            timeout=15,
+        # Current OI
+        oi_resp = requests.get(
+            f"{_BINANCE_BASE}/fapi/v1/openInterest",
+            params={"symbol": "BTCUSDT"},
+            timeout=_TIMEOUT,
         )
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
-        change_pct = data.get("openInterestChangePercent24h")
-        if change_pct is None:
-            return None
-        change_pct = float(change_pct)
+        oi_resp.raise_for_status()
+        current_oi = float(oi_resp.json()["openInterest"])
+
+        # 24h ago OI for change calculation
+        hist_resp = requests.get(
+            f"{_BINANCE_BASE}/futures/data/openInterestHist",
+            params={"symbol": "BTCUSDT", "period": "1h", "limit": 25},
+            timeout=_TIMEOUT,
+        )
+        hist_resp.raise_for_status()
+        hist = hist_resp.json()
+        prior_oi = float(hist[0]["sumOpenInterest"]) if hist else None
+
+        change_pct = None
+        if prior_oi and prior_oi > 0:
+            change_pct = round((current_oi / prior_oi - 1) * 100, 2)
+
         return {
-            "btc_oi_24h_change_pct": round(change_pct, 2),
-            "oi_interpretation": _oi_interpretation(change_pct),
+            "btc_oi_contracts": round(current_oi, 2),
+            "btc_oi_24h_change_pct": change_pct,
+            "oi_interpretation": _oi_interpretation(change_pct) if change_pct is not None else "unknown",
         }
     except Exception as exc:
-        logger.warning("Coinglass open interest fetch failed: %s", exc)
+        logger.warning("Binance open interest failed: %s", exc)
         return None
 
 
-def _fetch_long_short_ratio() -> dict[str, Any] | None:
+def _binance_long_short_ratio() -> dict[str, Any] | None:
+    """Global BTC long/short account ratio from Binance."""
     try:
-        url = f"{_COINGLASS_BASE}/futures/longShortChart"
         resp = requests.get(
-            url,
-            headers=_coinglass_headers(),
-            params={"symbol": "BTC", "interval": "1h", "limit": 1},
-            timeout=15,
+            f"{_BINANCE_BASE}/futures/data/globalLongShortAccountRatio",
+            params={"symbol": "BTCUSDT", "period": "1h", "limit": 1},
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
-        data = resp.json().get("data", [])
+        data = resp.json()
         if not data:
             return None
-        ratio = float(data[-1].get("longShortRatio", 1.0))
+        ratio = float(data[0]["longShortRatio"])
         return {
             "btc_long_short_ratio": round(ratio, 3),
             "ls_interpretation": _ls_interpretation(ratio),
         }
     except Exception as exc:
-        logger.warning("Coinglass long/short ratio fetch failed: %s", exc)
+        logger.warning("Binance long/short ratio failed: %s", exc)
         return None
 
 
-def _fetch_liquidations() -> dict[str, Any] | None:
+# ── Bybit ─────────────────────────────────────────────────────────────────────
+
+def _bybit_funding_rate() -> float | None:
+    """Current BTC/USDT perpetual funding rate from Bybit."""
     try:
-        url = f"{_COINGLASS_BASE}/liquidation_history"
         resp = requests.get(
-            url,
-            headers=_coinglass_headers(),
-            params={"symbol": "BTC", "interval": "24h", "limit": 1},
-            timeout=15,
+            f"{_BYBIT_BASE}/market/tickers",
+            params={"category": "linear", "symbol": "BTCUSDT"},
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if not data:
+        items = resp.json().get("result", {}).get("list", [])
+        if not items:
             return None
-        latest = data[-1]
-        return {
-            "btc_long_liquidations_24h_usd": latest.get("longLiquidationUsd"),
-            "btc_short_liquidations_24h_usd": latest.get("shortLiquidationUsd"),
-        }
+        return float(items[0]["fundingRate"])
     except Exception as exc:
-        logger.warning("Coinglass liquidations fetch failed: %s", exc)
+        logger.warning("Bybit funding rate failed: %s", exc)
         return None
-
-
-def _collect_coinglass() -> dict[str, Any] | None:
-    """Attempt to pull all Coinglass data; return None if all sub-calls fail."""
-    result: dict[str, Any] = {"source": "coinglass"}
-    success = False
-
-    for fetcher in (_fetch_funding_rate, _fetch_open_interest, _fetch_long_short_ratio, _fetch_liquidations):
-        sub = fetcher()
-        if sub:
-            result.update(sub)
-            success = True
-
-    return result if success else None
 
 
 # ── CoinGecko fallback ────────────────────────────────────────────────────────
 
-def _collect_coingecko() -> dict[str, Any]:
-    """CoinGecko free API — no key required."""
+def _coingecko_spot() -> dict[str, Any]:
+    """BTC spot price and returns from CoinGecko (no key required)."""
     try:
-        url = f"{_COINGECKO_BASE}/coins/markets"
         resp = requests.get(
-            url,
+            f"{_COINGECKO_BASE}/coins/markets",
             params={
                 "vs_currency": "usd",
                 "ids": "bitcoin",
                 "sparkline": "false",
                 "price_change_percentage": "24h,7d",
             },
-            timeout=15,
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
         if not data:
             return {}
         btc = data[0]
-        price_24h_chg = btc.get("price_change_percentage_24h", 0.0) or 0.0
-        price_7d_chg = btc.get("price_change_percentage_7d_in_currency", 0.0) or 0.0
         return {
-            "source": "coingecko_fallback",
             "btc_price_usd": btc.get("current_price"),
-            "btc_24h_change_pct": round(price_24h_chg, 2),
-            "btc_7d_change_pct": round(price_7d_chg, 2),
+            "btc_24h_change_pct": round(btc.get("price_change_percentage_24h") or 0.0, 2),
+            "btc_7d_change_pct": round(btc.get("price_change_percentage_7d_in_currency") or 0.0, 2),
             "btc_market_cap_usd": btc.get("market_cap"),
         }
     except Exception as exc:
-        logger.warning("CoinGecko fallback fetch failed: %s", exc)
+        logger.warning("CoinGecko spot price failed: %s", exc)
         return {}
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def collect() -> dict[str, Any]:
-    """Collect crypto market data. Falls back to CoinGecko if Coinglass unavailable."""
-    if settings.COINGLASS_API_KEY:
-        coinglass_data = _collect_coinglass()
-        if coinglass_data:
-            return coinglass_data
-        logger.warning("Coinglass returned no data — falling back to CoinGecko")
-    else:
-        logger.warning("COINGLASS_API_KEY not set — using CoinGecko fallback")
+    """Collect BTC derivatives data from Binance + Bybit public APIs."""
+    result: dict[str, Any] = {"sources": ["binance_futures", "bybit"]}
 
-    return _collect_coingecko()
+    # Funding rate: average Binance and Bybit
+    binance_rate = _binance_funding_rate()
+    bybit_rate = _bybit_funding_rate()
+    rates = [r for r in (binance_rate, bybit_rate) if r is not None]
+    if rates:
+        avg_rate = round(sum(rates) / len(rates), 6)
+        result["btc_funding_rate"] = avg_rate
+        result["btc_funding_rate_binance"] = binance_rate
+        result["btc_funding_rate_bybit"] = bybit_rate
+        result["funding_interpretation"] = _funding_interpretation(avg_rate)
+    else:
+        logger.warning("No funding rate data available from Binance or Bybit")
+
+    # Open interest (Binance)
+    oi = _binance_open_interest()
+    if oi:
+        result.update(oi)
+
+    # Long/short ratio (Binance)
+    ls = _binance_long_short_ratio()
+    if ls:
+        result.update(ls)
+
+    # Spot price (CoinGecko, always attempt)
+    result.update(_coingecko_spot())
+
+    return result
 
 
 if __name__ == "__main__":
     import json
+    from config import settings
     settings.configure_logging()
     print(json.dumps(collect(), indent=2))
