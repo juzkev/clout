@@ -24,6 +24,9 @@ from research.collectors import (
     crypto_collector,
     news_collector,
     price_collector,
+    trends_collector,
+    cot_collector,
+    calendar_collector,
 )
 from research.prompt_builder import build_prompt, save_prompt
 
@@ -54,6 +57,9 @@ def run() -> dict[str, Any] | None:
         "crypto": crypto_collector.collect,
         "news": news_collector.collect,
         "price": price_collector.collect,
+        "trends": trends_collector.collect,
+        "cot": cot_collector.collect,
+        "calendar": calendar_collector.collect,
     }
 
     results: dict[str, Any] = {}
@@ -68,9 +74,12 @@ def run() -> dict[str, Any] | None:
     crypto = results.get("crypto", {})
     news = results.get("news", {})
     price = results.get("price", {})
+    trends = results.get("trends", {})
+    cot = results.get("cot", {})
+    calendar = results.get("calendar", {})
 
     print("Building prompt...")
-    prompt = build_prompt(fred, sentiment, crypto, price, news)
+    prompt = build_prompt(fred, sentiment, crypto, price, news, trends=trends, cot=cot, calendar=calendar)
     prompt_path = save_prompt(prompt)
     print(f"Prompt saved to: {prompt_path}\n")
 

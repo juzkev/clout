@@ -124,3 +124,78 @@ def test_save_prompt_filename_format(tmp_data_dirs):
     path = save_prompt(prompt)
     today = date.today().strftime("%Y-%m-%d")
     assert path.name == f"{today}_prompt.txt"
+
+
+# ── New sections ──────────────────────────────────────────────────────────────
+
+SAMPLE_TRENDS = {
+    "Bitcoin": {"current_score": 72, "score_4w_ago": 55, "change_4w": 17.0, "interpretation": "retail_btc_interest_rising_bullish_momentum"},
+    "recession": {"current_score": 38, "score_4w_ago": 30, "change_4w": 8.0, "interpretation": "rising_recession_fear_risk_off_signal"},
+}
+
+SAMPLE_COT = {
+    "gold": {
+        "label": "Gold (GC)", "latest_date": "240112", "weeks_of_history": 26,
+        "mm_longs": 180000, "mm_shorts": 60000, "net_spec_position": 120000,
+        "net_spec_percentile": 82.0, "interpretation": "extreme_longs_contrarian_bearish",
+        "affected_tickers": ["GLD"],
+    }
+}
+
+SAMPLE_CALENDAR = {
+    "economic": [
+        {"date": "2024-01-15", "time": "8:30am", "event": "CPI m/m", "impact": "high",
+         "forecast": "0.2%", "previous": "0.1%", "potential_affected_tickers": ["TLT", "GLD"]},
+    ],
+    "earnings": [],
+    "all_events": [
+        {"date": "2024-01-15", "time": "8:30am", "event": "CPI m/m", "impact": "high",
+         "forecast": "0.2%", "previous": "0.1%", "potential_affected_tickers": ["TLT", "GLD"]},
+    ],
+    "days_ahead": 7,
+}
+
+
+def test_build_prompt_contains_new_sections():
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {}, trends=SAMPLE_TRENDS, cot=SAMPLE_COT, calendar=SAMPLE_CALENDAR)
+    assert "SEARCH TREND SIGNALS" in prompt
+    assert "POSITIONING EXTREMES (COT)" in prompt
+    assert "UPCOMING CATALYSTS" in prompt
+
+
+def test_build_prompt_trends_values():
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {}, trends=SAMPLE_TRENDS)
+    assert "Bitcoin" in prompt
+    assert "recession" in prompt
+    assert "risk_off" in prompt
+
+
+def test_build_prompt_cot_values():
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {}, cot=SAMPLE_COT)
+    assert "Gold (GC)" in prompt
+    assert "82.0%" in prompt
+    assert "contrarian_bearish" in prompt
+
+
+def test_build_prompt_calendar_values():
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {}, calendar=SAMPLE_CALENDAR)
+    assert "CPI m/m" in prompt
+    assert "TLT" in prompt
+
+
+def test_build_prompt_new_sections_empty_graceful():
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {}, trends={}, cot={}, calendar={})
+    assert "SEARCH TREND SIGNALS" in prompt
+    assert "data unavailable" in prompt
+
+
+def test_build_prompt_backward_compatible():
+    """Old 5-arg call still works (new params default to None)."""
+    from research.prompt_builder import build_prompt
+    prompt = build_prompt({}, {}, {}, {}, {})
+    assert "SEARCH TREND SIGNALS" in prompt  # section present but shows unavailable

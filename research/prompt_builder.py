@@ -1,6 +1,6 @@
 """Prompt builder for the trading research system.
 
-Assembles data from all five collectors into a structured LLM prompt and
+Assembles data from all collectors into a structured LLM prompt and
 saves it to data/prompts/{YYYY-MM-DD}_prompt.txt.
 Robust to None/empty inputs — missing sections print "data unavailable".
 """
@@ -99,13 +99,18 @@ def _fmt_crypto(crypto: dict) -> str:
     if not crypto:
         return "  data unavailable"
     lines = []
-    source = crypto.get("source", "unknown")
-    lines.append(f"  Source: {source}")
+    sources = crypto.get("sources", [crypto.get("source", "unknown")])
+    lines.append(f"  Sources: {', '.join(sources) if isinstance(sources, list) else sources}")
 
     if "btc_funding_rate" in crypto:
         rate = crypto["btc_funding_rate"]
         interp = crypto.get("funding_interpretation", "")
-        lines.append(f"  BTC Funding Rate (avg): {rate:.4%}  [{interp}]")
+        binance = crypto.get("btc_funding_rate_binance")
+        bybit = crypto.get("btc_funding_rate_bybit")
+        detail = ""
+        if binance is not None and bybit is not None:
+            detail = f" (Binance: {binance:.4%}, Bybit: {bybit:.4%})"
+        lines.append(f"  BTC Funding Rate (avg): {rate:.4%}{detail}  [{interp}]")
     if "btc_oi_24h_change_pct" in crypto:
         oi_chg = crypto["btc_oi_24h_change_pct"]
         interp = crypto.get("oi_interpretation", "")
@@ -114,10 +119,6 @@ def _fmt_crypto(crypto: dict) -> str:
         ratio = crypto["btc_long_short_ratio"]
         interp = crypto.get("ls_interpretation", "")
         lines.append(f"  BTC Long/Short Ratio: {ratio}  [{interp}]")
-    if "btc_long_liquidations_24h_usd" in crypto:
-        longs = crypto.get("btc_long_liquidations_24h_usd", "N/A")
-        shorts = crypto.get("btc_short_liquidations_24h_usd", "N/A")
-        lines.append(f"  BTC 24h Liquidations — Longs: ${longs:,}  Shorts: ${shorts:,}" if isinstance(longs, (int, float)) else f"  BTC 24h Liquidations — Longs: {longs}  Shorts: {shorts}")
     if "btc_price_usd" in crypto:
         lines.append(f"  BTC Price: ${crypto['btc_price_usd']:,.0f}")
     if "btc_24h_change_pct" in crypto:
@@ -131,10 +132,8 @@ def _fmt_price(price: dict) -> str:
     if not price:
         return "  data unavailable (yfinance not installed or download failed)"
 
-    # Sort by momentum rank; unranked/error tickers go last
     def sort_key(item):
-        d = item[1]
-        return d.get("momentum_rank_20d", 999)
+        return item[1].get("momentum_rank_20d", 999)
 
     sorted_tickers = sorted(price.items(), key=sort_key)
 
@@ -161,7 +160,7 @@ def _fmt_price(price: dict) -> str:
 
 def _fmt_news(news: dict) -> str:
     if not news:
-        return "  data unavailable (NEWSAPI_KEY not set or fetch failed)"
+        return "  data unavailable"
     lines = []
     labels = {"macro": "Macro / Fed / Rates", "crypto": "Crypto", "commodity": "Commodities / Gold / Oil"}
     for bucket, label in labels.items():
@@ -171,7 +170,72 @@ def _fmt_news(news: dict) -> str:
             lines.append("    No headlines available")
         else:
             for h in headlines:
-                lines.append(f"    • {h['title']} ({h['source']}, {h['publishedAt'][:10]})")
+                pub = h.get("publishedAt", "")[:10]
+                lines.append(f"    • {h['title']} ({h['source']}, {pub})")
+    return "\n".join(lines)
+
+
+def _fmt_trends(trends: dict) -> str:
+    if not trends:
+        return "  data unavailable"
+    lines = []
+    for keyword, data in trends.items():
+        score = data.get("current_score", "N/A")
+        chg = data.get("change_4w")
+        interp = data.get("interpretation", "")
+        chg_str = f" ({chg:+.0f} vs 4w ago)" if chg is not None else ""
+        lines.append(f"  {keyword:<22}: {score:>3}/100{chg_str}  [{interp}]")
+    return "\n".join(lines)
+
+
+def _fmt_cot(cot: dict) -> str:
+    if not cot:
+        return "  data unavailable"
+    lines = []
+    for market_key, data in cot.items():
+        label = data.get("label", market_key)
+        net = data.get("net_spec_position", "N/A")
+        pct = data.get("net_spec_percentile", "N/A")
+        interp = data.get("interpretation", "")
+        weeks = data.get("weeks_of_history", "?")
+        tickers = ", ".join(data.get("affected_tickers", []))
+        net_str = f"{net:+,}" if isinstance(net, int) else str(net)
+        lines.append(
+            f"  {label:<20} Net spec: {net_str:<10} "
+            f"Percentile: {pct}% ({weeks}w history)  [{interp}]"
+            + (f"  → {tickers}" if tickers else "")
+        )
+    return "\n".join(lines)
+
+
+def _fmt_calendar(calendar: dict) -> str:
+    if not calendar:
+        return "  data unavailable"
+
+    all_events = calendar.get("all_events", [])
+    if not all_events:
+        return "  No high-impact events in the next 7 days"
+
+    lines = []
+    for event in all_events:
+        dt = event.get("date", "")
+        time_str = event.get("time", "")
+        name = event.get("event", "")
+        impact = event.get("impact", "").upper()
+        tickers = ", ".join(event.get("potential_affected_tickers", []))
+        forecast = event.get("forecast", "")
+        prev = event.get("previous", "")
+
+        line = f"  {dt}"
+        if time_str:
+            line += f" {time_str}"
+        line += f"  [{impact}] {name}"
+        if forecast:
+            line += f"  (forecast: {forecast}, prev: {prev})"
+        if tickers:
+            line += f"  → affects: {tickers}"
+        lines.append(line)
+
     return "\n".join(lines)
 
 
@@ -183,6 +247,9 @@ def build_prompt(
     crypto: dict,
     price: dict,
     news: dict,
+    trends: dict | None = None,
+    cot: dict | None = None,
+    calendar: dict | None = None,
 ) -> str:
     sections = [
         _SYSTEM_HEADER,
@@ -201,6 +268,15 @@ def build_prompt(
         "",
         "RECENT NEWS THEMES:",
         _fmt_news(news),
+        "",
+        "SEARCH TREND SIGNALS:",
+        _fmt_trends(trends or {}),
+        "",
+        "POSITIONING EXTREMES (COT):",
+        _fmt_cot(cot or {}),
+        "",
+        "UPCOMING CATALYSTS (next 7 days):",
+        _fmt_calendar(calendar or {}),
         "",
         _OUTPUT_FORMAT,
     ]

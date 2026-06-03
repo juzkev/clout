@@ -246,6 +246,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "python-dotenv" },
+    { name = "pytrends" },
     { name = "requests" },
     { name = "yfinance" },
 ]
@@ -267,6 +268,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "pytrends", specifier = ">=4.9.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
@@ -1068,6 +1070,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/82/ed/0301aeeac3e5353ef3d94b6ec08bbcabd04a72018415dcb29e588514bba8/python_dotenv-1.2.2.tar.gz", hash = "sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3", size = 50135, upload-time = "2026-03-01T16:00:26.196Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl", hash = "sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a", size = 22101, upload-time = "2026-03-01T16:00:25.09Z" },
+]
+
+[[package]]
+name = "pytrends"
+version = "4.9.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+    { name = "pandas" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/65/a242fd8fbe98c11bd51f0b57d4752905396a99c42c91c3213c3f44e741c8/pytrends-4.9.2.tar.gz", hash = "sha256:691c6e36b1aeaa4754f3692bdbad0dff446e528ffb052eee2e7f139aaa2c6989", size = 247162, upload-time = "2023-04-13T23:17:21.313Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/ba/7a24a3723c790000faf880505ff1cc46f4d29f46dd353037938a070c4d23/pytrends-4.9.2-py3-none-any.whl", hash = "sha256:d7d0ee956be2f6e3e9fc09376c4615efb9347039d6d1f46e6f4326a5b7a14f67", size = 15352, upload-time = "2023-04-13T23:17:18.88Z" },
 ]
 
 [[package]]

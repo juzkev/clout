@@ -1,7 +1,7 @@
-"""Offline smoke tests for all five collectors.
+"""Offline smoke tests for all collectors.
 
 These tests verify:
-  - No-key paths return empty dicts/lists and don't raise
+  - No-key / no-network paths return empty dicts/lists and don't raise
   - Interpretation helper functions map values correctly
   - Price technical indicator math is correct (unit tests without network)
 """
@@ -139,3 +139,105 @@ def test_price_no_yfinance(monkeypatch):
     monkeypatch.setattr(price_collector, "_YF_AVAILABLE", False)
     result = price_collector.collect()
     assert result == {}
+
+
+# ── Trends collector ──────────────────────────────────────────────────────────
+
+def test_trends_no_network_returns_empty(monkeypatch):
+    """pytrends network failure → returns empty dict without raising."""
+    from research.collectors import trends_collector
+
+    def _fail(*a, **kw):
+        raise ConnectionError("no network")
+
+    monkeypatch.setattr("pytrends.request.TrendReq.build_payload", _fail)
+    result = trends_collector.collect()
+    assert isinstance(result, dict)
+
+
+def test_trends_interpretation_rising():
+    from research.collectors.trends_collector import _interpretation
+    assert _interpretation("recession", 10.0) == "rising_recession_fear_risk_off_signal"
+
+
+def test_trends_interpretation_falling():
+    from research.collectors.trends_collector import _interpretation
+    assert _interpretation("Bitcoin", -10.0) == "declining_btc_interest_bearish"
+
+
+def test_trends_interpretation_neutral():
+    from research.collectors.trends_collector import _interpretation
+    assert _interpretation("inflation", 2.0) == "inflation_concern_stable"
+
+
+# ── COT collector ─────────────────────────────────────────────────────────────
+
+def test_cot_no_network_returns_empty(monkeypatch):
+    """Network failure → returns empty dict without raising."""
+    import requests
+    from research.collectors import cot_collector
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("no network")))
+    result = cot_collector.collect()
+    assert isinstance(result, dict)
+
+
+def test_cot_percentile_rank():
+    from research.collectors.cot_collector import _percentile_rank
+    import pandas as pd
+    series = pd.Series([0.0, 10.0, 20.0, 30.0, 40.0])
+    assert _percentile_rank(series, 40.0) == 80.0  # 4 of 5 values are < 40
+    assert _percentile_rank(series, 0.0) == 0.0
+    assert _percentile_rank(series, 50.0) == 100.0
+
+
+def test_cot_interpretation_extremes():
+    from research.collectors.cot_collector import _cot_interpretation
+    assert _cot_interpretation(85.0) == "extreme_longs_contrarian_bearish"
+    assert _cot_interpretation(15.0) == "extreme_shorts_contrarian_bullish"
+    assert _cot_interpretation(50.0) == "positioning_neutral"
+
+
+def test_cot_interpretation_mid():
+    from research.collectors.cot_collector import _cot_interpretation
+    assert _cot_interpretation(65.0) == "elevated_longs_mild_bearish"
+    assert _cot_interpretation(35.0) == "depressed_longs_mild_bullish"
+
+
+# ── Calendar collector ────────────────────────────────────────────────────────
+
+def test_calendar_no_network_returns_structure(monkeypatch):
+    """Network failure → returns dict with empty lists, no exception."""
+    import requests
+    from research.collectors import calendar_collector
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("no network")))
+    result = calendar_collector.collect()
+    assert isinstance(result, dict)
+    assert "economic" in result
+    assert "earnings" in result
+    assert "all_events" in result
+    assert result["economic"] == []
+
+
+def test_calendar_affected_tickers_fomc():
+    from research.collectors.calendar_collector import _affected_tickers
+    tickers = _affected_tickers("FOMC Statement")
+    assert "TLT" in tickers
+    assert "SPY" in tickers
+
+
+def test_calendar_affected_tickers_cpi():
+    from research.collectors.calendar_collector import _affected_tickers
+    tickers = _affected_tickers("CPI m/m")
+    assert "TLT" in tickers
+    assert "GLD" in tickers
+
+
+def test_calendar_ff_date_parsing():
+    from research.collectors.calendar_collector import _parse_ff_date
+    dt = _parse_ff_date("Jan 15 2025")
+    assert dt is not None
+    assert dt.month == 1
+    assert dt.day == 15
+    assert dt.year == 2025
