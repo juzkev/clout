@@ -18,6 +18,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from config import settings
+from research import risk_manager
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -715,6 +716,13 @@ def merge_final_signals(
             "bear_case": review.get("bear_case", ""),
             "hidden_risks": review.get("hidden_risks", []),
             "passed_stress_test": True,
+            # Thesis tracking (lifecycle fields populated by the execution layer)
+            "thesis": idea.get("reasoning", ""),
+            "invalidation": idea.get("invalidation", ""),
+            "thesis_outcome": None,
+            "thesis_outcome_notes": None,
+            "opened_at": None,
+            "closed_at": None,
         }
         final_trades.append(final_trade)
         logger.info(
@@ -723,6 +731,9 @@ def merge_final_signals(
             final_trade["conviction"],
             size_adj,
         )
+
+    # Apply the GLD/SLV correlation guard before the signals are saved
+    final_trades = risk_manager.apply_correlation_guard(final_trades)
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),

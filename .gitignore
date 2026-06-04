@@ -13,5 +13,6 @@ data/price/*.parquet
 data/prompts/*.txt
 data/research_*.json
 signals/*.json
+logs/trades/*.json
 *.log
 .DS_Store

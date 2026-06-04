@@ -17,6 +17,9 @@ class OrderManager:
 
         Handles entry type (market_open vs limit_at_X), attaches
         stop-loss bracket, and records order metadata.
+
+        TODO: Always call risk_guard.check_pre_trade before placing orders.
+              Never bypass this check.
         """
         raise NotImplementedError
 

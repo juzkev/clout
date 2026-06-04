@@ -31,6 +31,7 @@ from research.collectors import (
     sentiment_collector,
     trends_collector,
 )
+from research import risk_manager
 from research.llm_client import (
     merge_final_signals,
     run_pass1_regime,
@@ -96,6 +97,34 @@ def _print_summary(signals: dict) -> None:
 
     if assessment:
         print(f"\nASSESSMENT: {assessment}")
+    print("=" * 60)
+
+
+def _print_risk_status(regime: dict, signals: dict, gated: bool) -> None:
+    confidence = regime.get("confidence", "?")
+    min_conf = settings.RISK_LIMITS["min_regime_confidence_to_trade"]
+    final_trades = signals.get("final_trades", [])
+
+    print(f"\n{'='*60}")
+    print("=== RISK STATUS ===")
+    gate_tag = " [BLOCKED — below minimum]" if gated else ""
+    print(f"Regime confidence: {confidence}/5 (min to trade: {min_conf}){gate_tag}")
+
+    if final_trades:
+        sizes = {t["ticker"]: f"{t.get('size_multiplier', 0.0) * 100:.0f}%" for t in final_trades}
+        print(f"Position sizes: {sizes}")
+    else:
+        print("Position sizes: none (no approved trades)")
+
+    # Correlation note: GLD & SLV both long
+    gld_long = any(t.get("ticker") == "GLD" and t.get("direction") == "long" for t in final_trades)
+    slv_long = any(t.get("ticker") == "SLV" and t.get("direction") == "long" for t in final_trades)
+    if gld_long and slv_long:
+        print("Correlation adjustments: GLD & SLV both long → SLV size reduced")
+    else:
+        print("Correlation adjustments: none")
+
+    print(f"Friday warning: {'yes' if risk_manager.check_friday_rule() else 'no'}")
     print("=" * 60)
 
 
@@ -223,19 +252,37 @@ def run(
                 "overall_assessment": f"Stress test failed: {exc}",
             }
 
-    # ── Step 7: Merge and save ────────────────────────────────────────────────
+    # ── Step 7: Merge ─────────────────────────────────────────────────────────
     signals = merge_final_signals(
         regime=regime,
         trade_ideas=trade_ideas,
         stress_test=stress_test,
         date_str=date_str,
     )
+
+    # ── Step 7a: Regime-confidence gate ───────────────────────────────────────
+    min_conf = settings.RISK_LIMITS["min_regime_confidence_to_trade"]
+    confidence = regime.get("confidence")
+    gated = not isinstance(confidence, (int, float)) or confidence < min_conf
+    if gated and signals.get("final_trades"):
+        logger.warning(
+            "Regime confidence {} < {} — blocking all {} trade(s)",
+            confidence, min_conf, len(signals["final_trades"]),
+        )
+        signals["final_trades"] = []
+        signals["blocked_reason"] = "regime confidence too low"
+
+    # ── Step 7b: Conviction-based position sizing ─────────────────────────────
+    risk_manager.apply_position_sizing(signals["final_trades"])
+
+    # ── Step 7c: Save ─────────────────────────────────────────────────────────
     out_path = _SIGNALS_DIR / f"{date_str}_signals.json"
     out_path.write_text(json.dumps(signals, indent=2), encoding="utf-8")
     logger.info("Signals saved to {}", out_path)
 
     # ── Step 8: Summary ───────────────────────────────────────────────────────
     _print_summary(signals)
+    _print_risk_status(regime, signals, gated)
     return signals
 
 

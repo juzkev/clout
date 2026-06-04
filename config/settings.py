@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -153,6 +154,42 @@ TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
 PRICE_CACHE_MAX_AGE_HOURS: int = 6
 
+# ── Risk limits ────────────────────────────────────────────────────────────────
+
+# All risk thresholds live here — never hard-code these values elsewhere.
+RISK_LIMITS: dict[str, float | int | bool] = {
+    # Hard stops
+    "max_position_size_pct": 0.20,
+    "drawdown_pause_threshold": 0.10,
+    "drawdown_shutdown_threshold": 0.15,
+    "max_daily_loss_pct": 0.03,
+    "vixy_max_portfolio_pct": 0.05,
+    # Position sizing (fraction of portfolio)
+    "default_position_size_pct": 0.12,   # conviction 3-4
+    "high_conviction_size_pct": 0.18,    # conviction 5
+    "low_conviction_size_pct": 0.08,     # conviction 1-2
+    # Correlation guard
+    "gld_slv_both_long_slv_multiplier": 0.5,
+    # No-trade conditions
+    "min_regime_confidence_to_trade": 3,
+    "no_new_trades_on_friday": True,
+}
+
+
+def get_position_size_pct(conviction: int) -> float:
+    """Map a conviction score (1-5) to a portfolio position-size fraction."""
+    rl = RISK_LIMITS
+    try:
+        c = int(conviction)
+    except (TypeError, ValueError):
+        c = 3  # unknown conviction → default sizing
+    if c >= 5:
+        return float(rl["high_conviction_size_pct"])
+    if c >= 3:
+        return float(rl["default_position_size_pct"])
+    return float(rl["low_conviction_size_pct"])
+
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -161,3 +198,8 @@ def configure_logging(level: int = logging.INFO) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         level=level,
     )
+
+
+# Self-reference so callers can use either `from config import settings`
+# (module) or `from config.settings import settings` (this alias → same module).
+settings = sys.modules[__name__]
