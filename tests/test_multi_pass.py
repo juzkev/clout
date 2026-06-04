@@ -8,7 +8,10 @@ import pytest
 from config import settings
 from research.llm_client import (
     _cap_holding_days,
+    _coerce_size_adjustment,
+    _normalize_pass1,
     _normalize_pass2,
+    _normalize_pass3,
     _parse_json_response,
     merge_final_signals,
     run_pass3_stress_test,
@@ -248,3 +251,69 @@ def test_normalize_then_cap_bare_list():
     """End-to-end: a bare list flows through normalise + cap without error."""
     capped = _cap_holding_days(_normalize_pass2([{"ticker": "VIXY", "holding_days": 9}]))
     assert capped["trade_ideas"][0]["holding_days"] == 3
+
+
+def test_normalize_pass2_confidence_alias():
+    """Per-idea 'confidence' is mapped to 'conviction'."""
+    result = _normalize_pass2({"trade_ideas": [{"ticker": "XLE", "confidence": 4}]})
+    assert result["trade_ideas"][0]["conviction"] == 4
+
+
+# ── Pass 1 normalisation ──────────────────────────────────────────────────────
+
+def test_normalize_pass1_probability_confidence():
+    """A 0-1 probability confidence is rescaled to an integer 1-5."""
+    result = _normalize_pass1({"regime": "stagflation", "confidence": 0.72})
+    assert result["confidence"] == 4
+
+
+def test_normalize_pass1_narrative_alias():
+    """'narrative' is mapped to 'regime_reasoning'."""
+    result = _normalize_pass1({"regime": "risk_on", "confidence": 3, "narrative": "because"})
+    assert result["regime_reasoning"] == "because"
+
+
+# ── Pass 3 normalisation (the bug from the real run) ──────────────────────────
+
+def test_normalize_pass3_trade_review_skip():
+    """A model that uses trade_review/recommendation/approved=false must yield a skip."""
+    raw = {
+        "trade_review": [
+            {
+                "ticker": "XLE",
+                "approved": False,
+                "recommendation": "skip",
+                "sizing_suggestion": "reduce to no more than 25% of standard risk",
+            }
+        ]
+    }
+    norm = _normalize_pass3(raw)
+    review = norm["reviewed_ideas"][0]
+    assert review["final_recommendation"] == "skip"
+    assert review["size_adjustment"] == "skip"
+
+
+def test_normalize_pass3_then_merge_filters_skip():
+    """End-to-end: the real-run payload must filter the XLE trade out, not approve it."""
+    ideas = {"trade_ideas": [{"ticker": "XLE", "direction": "long", "conviction": 4}]}
+    raw_stress = {
+        "trade_review": [
+            {"ticker": "XLE", "approved": False, "recommendation": "skip"}
+        ]
+    }
+    merged = merge_final_signals(
+        regime={"regime": "stagflation"},
+        trade_ideas=ideas,
+        stress_test=_normalize_pass3(raw_stress),
+        date_str="2026-06-04",
+    )
+    assert merged["final_trades"] == []
+    assert merged["trades_filtered_out"] == 1
+
+
+def test_coerce_size_adjustment_variants():
+    assert _coerce_size_adjustment("reduce to 25% of risk", "reduce_size") == "quarter"
+    assert _coerce_size_adjustment("half size", "reduce_size") == "half"
+    assert _coerce_size_adjustment(None, "skip") == "skip"
+    assert _coerce_size_adjustment(0.5, "reduce_size") == "half"
+    assert _coerce_size_adjustment(None, "proceed") == "full"

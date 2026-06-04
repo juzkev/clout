@@ -46,6 +46,72 @@ _PASS3_SYSTEM = (
 )
 
 
+# ── Required output schemas (pinned so models don't invent field names) ───────
+
+_PASS1_SCHEMA = """\
+Return ONLY this exact JSON object (no markdown, no commentary):
+{
+  "regime": "risk_on | risk_off | neutral | stagflation",
+  "confidence": <integer 1-5>,
+  "macro_bias": "bullish | bearish | neutral",
+  "volatility_regime": "low | normal | elevated | high",
+  "key_signals": ["...", "..."],
+  "regime_reasoning": "2-3 sentence explanation",
+  "cross_asset_message": "what bonds/gold/crypto/equities jointly imply",
+  "upcoming_risks": ["...", "..."]
+}
+IMPORTANT: "confidence" is an INTEGER from 1 to 5 (not a probability). Use the key
+"regime_reasoning" (not "narrative")."""
+
+_PASS2_SCHEMA = """\
+Return ONLY this exact JSON object (no markdown, no commentary):
+{
+  "no_trade_reason": null,
+  "trade_ideas": [
+    {
+      "ticker": "<one ticker from the tradeable universe above>",
+      "direction": "long | short",
+      "conviction": <integer 1-5>,
+      "catalyst": "the specific trigger for this trade",
+      "signal_sources": ["...", "..."],
+      "entry": "market_open | limit_at_<price>",
+      "stop_loss_pct": <number>,
+      "target_pct": <number>,
+      "holding_days": <integer, must be <= max_holding_days>,
+      "max_holding_days": <integer from the universe constraints above>,
+      "invalidation": "what would prove this idea wrong",
+      "reasoning": "..."
+    }
+  ]
+}
+Output 0-3 ideas (empty list + a "no_trade_reason" string is valid).
+Use the key "conviction" (integer 1-5) — NOT "confidence"."""
+
+_PASS3_SCHEMA = """\
+Return ONLY this exact JSON object (no markdown, no commentary):
+{
+  "reviewed_ideas": [
+    {
+      "ticker": "...",
+      "original_conviction": <integer 1-5>,
+      "adjusted_conviction": <integer 1-5>,
+      "bull_case": "...",
+      "bear_case": "...",
+      "hidden_risks": ["...", "..."],
+      "prompt_bias_check": "any bullish bias detected in the original analysis",
+      "regime_fit": "does this fit the stated regime?",
+      "final_recommendation": "proceed | reduce_size | skip",
+      "size_adjustment": "full | half | quarter | skip"
+    }
+  ],
+  "portfolio_level_risks": ["...", "..."],
+  "overall_assessment": "..."
+}
+Use the key "reviewed_ideas" (NOT "trade_review"), "final_recommendation"
+(NOT "recommendation"), and "size_adjustment" = one of full/half/quarter/skip.
+If you would not take a trade, set final_recommendation = "skip"."""
+
+
 # ── Core utilities ────────────────────────────────────────────────────────────
 
 def _parse_json_response(
@@ -240,30 +306,76 @@ def _build_universe_block() -> str:
     return "\n".join(lines)
 
 
+def _normalize_pass1(result: Any) -> dict:
+    """Map common Pass 1 field aliases and coerce confidence to an integer 1-5."""
+    if not isinstance(result, dict):
+        return {"regime": "unknown", "confidence": None, "regime_reasoning": ""}
+    if "regime_reasoning" not in result:
+        for key in ("narrative", "reasoning", "rationale", "explanation"):
+            if key in result:
+                result["regime_reasoning"] = result[key]
+                break
+    c = result.get("confidence")
+    if isinstance(c, bool):  # guard: bool is a subclass of int
+        pass
+    elif isinstance(c, float) and 0.0 <= c <= 1.0:
+        # model returned a probability instead of a 1-5 score
+        result["confidence"] = max(1, min(5, round(c * 5)))
+    elif isinstance(c, (int, float)):
+        result["confidence"] = max(1, min(5, int(round(c))))
+    return result
+
+
+_IDEA_FIELD_ALIASES = {
+    "conviction": ("confidence", "conviction_score"),
+    "catalyst": ("entry_logic", "trigger"),
+    "stop_loss_pct": ("stop_loss_percent",),
+    "target_pct": ("take_profit_pct", "target_percent"),
+}
+
+
+def _normalize_idea(idea: dict) -> dict:
+    """Map per-idea field aliases (e.g. confidence → conviction) in place."""
+    if not isinstance(idea, dict):
+        return idea
+    for canonical, aliases in _IDEA_FIELD_ALIASES.items():
+        if canonical not in idea:
+            for alias in aliases:
+                if alias in idea:
+                    idea[canonical] = idea[alias]
+                    break
+    return idea
+
+
 def _normalize_pass2(result: Any) -> dict:
     """Coerce Pass 2 output into {'trade_ideas': [...], ...}.
 
     LLMs sometimes return a bare JSON array of ideas, a single idea object, or
     nest the list under an alternate key. Normalise all of these so downstream
-    code can rely on a dict with a 'trade_ideas' list.
+    code can rely on a dict with a 'trade_ideas' list, and map per-idea field
+    aliases (e.g. confidence → conviction).
     """
     if isinstance(result, list):
-        return {"trade_ideas": result}
-    if not isinstance(result, dict):
+        result = {"trade_ideas": result}
+    elif not isinstance(result, dict):
         logger.warning("Pass 2 returned unexpected type {} — treating as no trades", type(result).__name__)
         return {"trade_ideas": [], "no_trade_reason": "Unparseable Pass 2 output"}
-    if "trade_ideas" in result and isinstance(result["trade_ideas"], list):
-        return result
-    # Look for the list under a differently-named key
-    for key in ("ideas", "trades", "trade_idea", "recommendations"):
-        if isinstance(result.get(key), list):
-            result["trade_ideas"] = result.pop(key)
-            return result
-    # A single trade-idea object returned directly
-    if "ticker" in result:
-        return {"trade_ideas": [result]}
-    # Nothing idea-shaped found
-    result.setdefault("trade_ideas", [])
+    elif "trade_ideas" not in result or not isinstance(result.get("trade_ideas"), list):
+        # Look for the list under a differently-named key
+        moved = False
+        for key in ("ideas", "trades", "trade_idea", "recommendations"):
+            if isinstance(result.get(key), list):
+                result["trade_ideas"] = result.pop(key)
+                moved = True
+                break
+        if not moved:
+            if "ticker" in result:  # a single trade-idea object returned directly
+                result = {"trade_ideas": [result]}
+            else:
+                result.setdefault("trade_ideas", [])
+
+    for idea in result.get("trade_ideas", []):
+        _normalize_idea(idea)
     return result
 
 
@@ -285,6 +397,102 @@ def _cap_holding_days(result: dict) -> dict:
     return result
 
 
+# ── Pass 3 normalisation (so a 'skip' can never be silently dropped) ──────────
+
+_SKIP_WORDS = {"skip", "reject", "avoid", "no", "do_not_trade", "drop", "pass", "decline"}
+_REDUCE_WORDS = {"reduce", "reduce_size", "size_down", "trim", "downsize", "scale_back"}
+_PROCEED_WORDS = {"proceed", "approve", "approved", "take", "yes", "ok", "accept", "go"}
+
+
+def _coerce_size_adjustment(value: Any, recommendation: str) -> str:
+    """Map a free-text/aliased size hint to one of full/half/quarter/skip."""
+    if recommendation == "skip":
+        return "skip"
+    if isinstance(value, str):
+        v = value.lower()
+        if "quarter" in v or "25%" in v or "1/4" in v:
+            return "quarter"
+        if "half" in v or "50%" in v or "1/2" in v:
+            return "half"
+        if "skip" in v or "avoid" in v or "zero" in v or "0%" in v or "no position" in v:
+            return "skip"
+        if "full" in v or "100%" in v or "standard" in v:
+            return "full"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # treat as a multiplier or percentage
+        m = value / 100.0 if value > 1 else value
+        if m <= 0.0:
+            return "skip"
+        if m <= 0.3:
+            return "quarter"
+        if m <= 0.6:
+            return "half"
+        return "full"
+    if recommendation == "reduce_size":
+        return "half"
+    return "full"
+
+
+def _normalize_pass3(result: Any) -> dict:
+    """Coerce Pass 3 output into the canonical reviewed-ideas schema.
+
+    Critically maps recommendation/sizing aliases (and approved=false) so an
+    adversarial 'skip' is never silently lost to a default 'proceed'.
+    """
+    if isinstance(result, list):
+        result = {"reviewed_ideas": result}
+    elif not isinstance(result, dict):
+        return {"reviewed_ideas": [], "portfolio_level_risks": [], "overall_assessment": ""}
+
+    if "reviewed_ideas" not in result or not isinstance(result.get("reviewed_ideas"), list):
+        for key in ("trade_review", "trade_reviews", "reviews", "reviewed", "ideas", "trades"):
+            if isinstance(result.get(key), list):
+                result["reviewed_ideas"] = result.pop(key)
+                break
+        result.setdefault("reviewed_ideas", [])
+
+    for r in result["reviewed_ideas"]:
+        if not isinstance(r, dict):
+            continue
+        # final_recommendation aliases
+        if "final_recommendation" not in r:
+            rec = r.get("recommendation") or r.get("decision") or r.get("verdict") or r.get("action")
+            if rec is None and "approved" in r:
+                rec = "proceed" if r.get("approved") else "skip"
+            if rec is not None:
+                r["final_recommendation"] = rec
+        rec_norm = str(r.get("final_recommendation", "proceed")).lower().strip().replace(" ", "_")
+        if rec_norm in _SKIP_WORDS:
+            rec_norm = "skip"
+        elif rec_norm in _REDUCE_WORDS or rec_norm in ("half", "quarter"):
+            rec_norm = "reduce_size"
+        elif rec_norm in _PROCEED_WORDS:
+            rec_norm = "proceed"
+        # an explicit approved=false always means skip
+        if r.get("approved") is False:
+            rec_norm = "skip"
+        r["final_recommendation"] = rec_norm
+
+        # size_adjustment aliases
+        if "size_adjustment" not in r:
+            for key in ("sizing_suggestion", "size", "sizing", "position_size", "size_multiplier"):
+                if key in r:
+                    r["size_adjustment"] = r[key]
+                    break
+        r["size_adjustment"] = _coerce_size_adjustment(r.get("size_adjustment"), rec_norm)
+
+        # conviction alias
+        if "adjusted_conviction" not in r:
+            for key in ("adjusted_confidence", "new_conviction", "conviction"):
+                if key in r:
+                    r["adjusted_conviction"] = r[key]
+                    break
+
+    result.setdefault("portfolio_level_risks", result.get("portfolio_risks", []))
+    result.setdefault("overall_assessment", result.get("assessment", ""))
+    return result
+
+
 # ── Pass 1: Regime Classification ────────────────────────────────────────────
 
 def run_pass1_regime(
@@ -302,7 +510,7 @@ def run_pass1_regime(
         f"SENTIMENT INDICATORS:\n{json.dumps(sentiment_data, indent=2)}",
         f"CROSS-ASSET PRICE SUMMARY:\n{json.dumps(price_summary, indent=2)}",
         f"UPCOMING CATALYSTS:\n{json.dumps(calendar_data, indent=2)}",
-        "Classify the market regime and return the required JSON schema.",
+        _PASS1_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass1_regime.txt")
 
@@ -317,6 +525,7 @@ def run_pass1_regime(
     except Exception as exc:
         raise RuntimeError(f"Pass 1 (Regime) failed: {exc}") from exc
 
+    result = _normalize_pass1(result)
     logger.info(
         "Pass 1 complete — regime: {} (confidence: {}/5)",
         result.get("regime", "?"),
@@ -356,6 +565,7 @@ def run_pass2_ideas(
             "Only generate high-conviction ideas (4-5/5).\n"
             "It is better to have no trade than a bad trade."
         ),
+        _PASS2_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass2_ideas.txt")
 
@@ -417,6 +627,7 @@ def run_pass3_stress_test(
             "A trade that survives scrutiny is worth taking.\n"
             "A trade that does not should be skipped or sized down."
         ),
+        _PASS3_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass3_stress.txt")
 
@@ -456,11 +667,8 @@ def run_pass3_stress_test(
     except Exception as exc:
         raise RuntimeError(f"Pass 3 JSON parse failed: {exc}") from exc
 
-    # Model may return a bare list of reviews instead of the wrapped object
-    if isinstance(result, list):
-        result = {"reviewed_ideas": result}
-    elif not isinstance(result, dict):
-        result = {"reviewed_ideas": []}
+    # Map aliased field names so a 'skip' / approved=false is never silently lost
+    result = _normalize_pass3(result)
 
     for reviewed in result.get("reviewed_ideas", []):
         logger.info(
