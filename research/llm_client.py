@@ -155,20 +155,55 @@ def _route_llm(
 # ── Price data helpers ────────────────────────────────────────────────────────
 
 def _price_summary_for_pass1(price_data: dict) -> dict:
-    """Extract returns_20d / volatility / vs_sma50 per ticker for regime pass."""
+    """Extract returns_20d / volatility / vs_sma50 per ticker for regime pass.
+
+    Includes both tradeable and signal-only readings (SPY/HYG are valuable for
+    regime classification even though they are never traded).
+    """
     r, v, s = {}, {}, {}
-    for ticker, d in price_data.items():
-        if "error" not in d:
+
+    def _add(ticker: str, d: dict) -> None:
+        if isinstance(d, dict) and "error" not in d:
             r[ticker] = d.get("return_20d_pct")
             v[ticker] = d.get("vol_20d_ann_pct")
             s[ticker] = d.get("above_sma50")
+
+    for ticker, d in price_data.items():
+        if ticker == "signal_readings":
+            continue
+        _add(ticker, d)
+    for ticker, d in price_data.get("signal_readings", {}).items():
+        _add(ticker, d)
+
     return {"returns_20d": r, "volatility": v, "vs_sma50": s}
 
 
 def _price_structure_for_pass2(price_data: dict) -> dict:
-    """Build momentum_ranking list and technicals dict for trade ideas pass."""
-    valid = {t: d for t, d in price_data.items() if "error" not in d}
+    """Build momentum_ranking list and technicals dict for trade ideas pass.
+
+    Only tradeable instruments are ranked/surfaced; signal-only readings are
+    excluded here (they inform the regime pass, not trade selection).
+    """
+    valid = {
+        t: d
+        for t, d in price_data.items()
+        if t != "signal_readings" and isinstance(d, dict) and "error" not in d
+    }
     ranked = sorted(valid.items(), key=lambda x: x[1].get("momentum_rank_20d", 999))
+
+    def _technicals(d: dict) -> dict:
+        tech = {
+            "rsi_14": d.get("rsi_14"),
+            "above_sma50": d.get("above_sma50"),
+            "current_price": d.get("current_price"),
+        }
+        # Surface VIXY-specific flags when present
+        if "vixy_hold_warning" in d:
+            tech["vixy_hold_warning"] = d["vixy_hold_warning"]
+        if "vix_backwardation_proxy" in d:
+            tech["vix_backwardation_proxy"] = d["vix_backwardation_proxy"]
+        return tech
+
     return {
         "momentum_ranking": [
             {
@@ -180,15 +215,45 @@ def _price_structure_for_pass2(price_data: dict) -> dict:
             }
             for t, d in ranked
         ],
-        "technicals": {
-            t: {
-                "rsi_14": d.get("rsi_14"),
-                "above_sma50": d.get("above_sma50"),
-                "current_price": d.get("current_price"),
-            }
-            for t, d in valid.items()
-        },
+        "technicals": {t: _technicals(d) for t, d in valid.items()},
     }
+
+
+# ── Universe context + holding-period enforcement ─────────────────────────────
+
+def _build_universe_block() -> str:
+    """Build the tradeable-universe + signal-only context from INSTRUMENT_META."""
+    lines = ["TRADEABLE UNIVERSE AND CONSTRAINTS:"]
+    for ticker in settings.get_tradeable_universe():
+        m = settings.get_instrument_meta(ticker)
+        sigs = ", ".join(m.get("signal_sources", []))
+        lines.append(
+            f"- {ticker} ({m.get('asset_class', '?')}): "
+            f"max {m.get('max_holding_days', '?')} day hold. "
+            f"Primary signals: {sigs}. Note: {m.get('notes', '')}"
+        )
+    lines.append("")
+    lines.append("SIGNAL-ONLY (do not trade, use as context):")
+    for ticker in settings.SIGNAL_ONLY:
+        m = settings.get_instrument_meta(ticker)
+        lines.append(f"- {ticker}: {m.get('notes', '')}")
+    return "\n".join(lines)
+
+
+def _cap_holding_days(result: dict) -> dict:
+    """Enforce per-instrument max_holding_days on Pass 2 ideas (cap, never reject)."""
+    for idea in result.get("trade_ideas", []):
+        ticker = idea.get("ticker")
+        meta = settings.get_instrument_meta(ticker)
+        max_hold = meta.get("max_holding_days")
+        if max_hold is None:
+            continue
+        idea["max_holding_days"] = max_hold
+        proposed = idea.get("holding_days")
+        if isinstance(proposed, (int, float)) and proposed > max_hold:
+            logger.warning("{}: holding_days capped from {} to {}", ticker, proposed, max_hold)
+            idea["holding_days"] = max_hold
+    return result
 
 
 # ── Pass 1: Regime Classification ────────────────────────────────────────────
@@ -254,8 +319,11 @@ def run_pass2_ideas(
         f"SEARCH TREND SIGNALS:\n{json.dumps(trends_data, indent=2)}",
         f"RECENT NEWS THEMES:\n{json.dumps(news_data, indent=2)}",
         (
-            "TRADEABLE UNIVERSE: IBIT, GLD, SPY, QQQ, TLT, USO, HYG\n"
-            "STRATEGY: Swing trades, 2-10 day holds, no leverage.\n"
+            _build_universe_block()
+            + "\n\nSTRATEGY: Swing trades, no leverage. Respect each instrument's max hold.\n"
+            "Each trade idea MUST include a 'max_holding_days' field equal to the "
+            "instrument's max hold listed above, and its 'holding_days' MUST NOT "
+            "exceed that value.\n"
             "Only generate high-conviction ideas (4-5/5).\n"
             "It is better to have no trade than a bad trade."
         ),
@@ -272,6 +340,9 @@ def run_pass2_ideas(
         result = _parse_json_response(raw, retry_fn=retry_fn)
     except Exception as exc:
         raise RuntimeError(f"Pass 2 (Trade Ideas) failed: {exc}") from exc
+
+    # Enforce per-instrument holding-period limits (cap, never reject)
+    result = _cap_holding_days(result)
 
     n = len(result.get("trade_ideas", []))
     logger.info("Pass 2 complete — {} trade idea(s) generated", n)
@@ -299,6 +370,16 @@ def run_pass3_stress_test(
         f"PROPOSED TRADE IDEAS (generated by a separate model):\n"
         f"{json.dumps(trade_ideas['trade_ideas'], indent=2)}",
         f"MACRO CONTEXT:\n{json.dumps(macro_data, indent=2)}",
+        (
+            "SPECIAL INSTRUMENT RULES TO ENFORCE:\n"
+            "- VIXY: reject any idea with holding_days > 3. Flag if proposed during "
+            "a high-VIX FOMC week.\n"
+            "- SLV: flag if no corresponding GLD signal exists to justify the trade.\n"
+            "- TLT: flag if the macro_bias from Pass 1 contradicts the direction "
+            "(e.g. long TLT in a risk_on regime).\n"
+            "- XLE: verify a news or COT catalyst exists — do not approve "
+            "momentum-only XLE trades."
+        ),
         (
             "Your job: find every reason these trades could fail.\n"
             "Be adversarial. Flag any bullish bias in the original analysis.\n"

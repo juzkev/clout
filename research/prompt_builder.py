@@ -132,10 +132,13 @@ def _fmt_price(price: dict) -> str:
     if not price:
         return "  data unavailable (yfinance not installed or download failed)"
 
+    signal_readings = price.get("signal_readings", {})
+    tradeable = {t: d for t, d in price.items() if t != "signal_readings"}
+
     def sort_key(item):
         return item[1].get("momentum_rank_20d", 999)
 
-    sorted_tickers = sorted(price.items(), key=sort_key)
+    sorted_tickers = sorted(tradeable.items(), key=sort_key)
 
     header = f"  {'Ticker':<10} {'Price':>10} {'1d%':>7} {'5d%':>7} {'20d%':>8} {'Vol20d':>8} {'RSI14':>7} {'SMA50':>7} {'Rank':>5}"
     rows = [header, "  " + "-" * 76]
@@ -155,7 +158,41 @@ def _fmt_price(price: dict) -> str:
             f" {sma_flag:>7}"
             f" {d.get('momentum_rank_20d', '-'):>5}"
         )
+
+    if signal_readings:
+        rows.append("")
+        rows.append("  Signal-only instruments (not traded):")
+        for ticker, d in signal_readings.items():
+            if "error" in d:
+                rows.append(f"    {ticker:<10} ERROR: {d['error']}")
+                continue
+            rows.append(
+                f"    {ticker:<10}"
+                f" price {d.get('current_price', 0):>10.2f}"
+                f"  20d {d.get('return_20d_pct', 0):>+7.2f}%"
+                f"  RSI {d.get('rsi_14', 0):>5.1f}"
+            )
+
     return "\n".join(rows)
+
+
+def _fmt_universe_context() -> str:
+    """Render the tradeable universe and signal-only instruments from INSTRUMENT_META."""
+    lines = []
+    for ticker in settings.get_tradeable_universe():
+        m = settings.get_instrument_meta(ticker)
+        sigs = ", ".join(m.get("signal_sources", []))
+        lines.append(
+            f"  {ticker} | {m.get('asset_class', '?')} | "
+            f"max hold: {m.get('max_holding_days', '?')}d | "
+            f"signals: {sigs} | {m.get('notes', '')}"
+        )
+    lines.append("")
+    lines.append("  SIGNAL INSTRUMENTS (context only, do not trade):")
+    for ticker in settings.SIGNAL_ONLY:
+        m = settings.get_instrument_meta(ticker)
+        lines.append(f"    {ticker}: {m.get('notes', '')}")
+    return "\n".join(lines)
 
 
 def _fmt_news(news: dict) -> str:
@@ -253,6 +290,9 @@ def build_prompt(
 ) -> str:
     sections = [
         _SYSTEM_HEADER,
+        "",
+        "UNIVERSE CONTEXT:",
+        _fmt_universe_context(),
         "",
         "MACRO ENVIRONMENT:",
         _fmt_fred(fred),

@@ -5,8 +5,10 @@ import config.settings as settings
 
 def test_universe_non_empty():
     assert len(settings.UNIVERSE) > 0
-    assert "SPY" in settings.UNIVERSE
     assert "IBIT" in settings.UNIVERSE
+    # SPY is a signal-only instrument now, not part of the tradeable universe
+    assert "SPY" in settings.SIGNAL_ONLY
+    assert "SPY" not in settings.UNIVERSE
 
 
 def test_crypto_symbols():

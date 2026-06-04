@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from config import settings
 from research.llm_client import (
+    _cap_holding_days,
     _parse_json_response,
     merge_final_signals,
     run_pass3_stress_test,
@@ -182,3 +184,36 @@ def test_pass3_skipped_when_empty():
     mock_manual.assert_not_called()
     assert result["reviewed_ideas"] == []
     assert result["overall_assessment"] == "No trades to review."
+
+
+# ── Universe / instrument-metadata tests ──────────────────────────────────────
+
+def test_universe_no_signal_only_traded():
+    """No signal-only instrument may appear in the tradeable universe."""
+    tradeable = settings.get_tradeable_universe()
+    for ticker in settings.SIGNAL_ONLY:
+        assert ticker not in tradeable
+    assert tradeable == settings.UNIVERSE
+
+
+def test_vixy_max_hold_enforced():
+    """A VIXY idea proposing a 7-day hold is capped to the 3-day max."""
+    pass2_output = {
+        "trade_ideas": [
+            {"ticker": "VIXY", "direction": "long", "holding_days": 7, "conviction": 4},
+        ],
+    }
+    capped = _cap_holding_days(pass2_output)
+    idea = capped["trade_ideas"][0]
+    assert idea["holding_days"] == 3
+    assert idea["max_holding_days"] == 3
+
+
+def test_instrument_meta_complete():
+    """Every tradeable + signal-only ticker has metadata with required keys."""
+    required = ("name", "asset_class", "notes")
+    for ticker in settings.UNIVERSE + settings.SIGNAL_ONLY:
+        meta = settings.get_instrument_meta(ticker)
+        assert meta, f"{ticker} missing from INSTRUMENT_META"
+        for key in required:
+            assert key in meta, f"{ticker} missing '{key}'"

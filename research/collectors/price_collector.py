@@ -1,11 +1,15 @@
 """Price and technical indicator collector.
 
-Downloads 60-day OHLCV via yfinance for all universe tickers + BTC-USD.
+Downloads 60-day OHLCV via yfinance for settings.PRICE_DOWNLOAD_LIST
+(tradeable universe + signal-only instruments).
 Raw OHLCV is cached to data/price/ as parquet; cache is reused if <6 hours old.
 
 Per-ticker output:
   current_price, return_1d, return_5d, return_20d,
-  vol_20d_ann, rsi_14, above_sma50, momentum_rank_20d
+  vol_20d_ann, rsi_14, above_sma50, momentum_rank_20d, is_signal_only
+
+Tradeable instruments are top-level keys (ranked); signal-only instruments are
+grouped under a "signal_readings" key and are not ranked.
 """
 
 import logging
@@ -34,7 +38,7 @@ except ImportError:
     _PARQUET_AVAILABLE = False
 
 
-ALL_TICKERS = settings.UNIVERSE + ["BTC-USD"]
+ALL_TICKERS = settings.PRICE_DOWNLOAD_LIST
 
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -139,7 +143,7 @@ def _analyse(ticker: str, df: pd.DataFrame) -> dict[str, Any]:
     sma50 = float(close.iloc[-50:].mean()) if len(close) >= 50 else float(close.mean())
     above_sma50 = bool(current_price > sma50)
 
-    return {
+    out = {
         "ticker": ticker,
         "current_price": current_price,
         "return_1d_pct": ret_1d,
@@ -149,7 +153,18 @@ def _analyse(ticker: str, df: pd.DataFrame) -> dict[str, Any]:
         "rsi_14": rsi_val,
         "above_sma50": above_sma50,
         "sma50": round(sma50, 4),
+        "is_signal_only": ticker in settings.SIGNAL_ONLY,
     }
+
+    # VIXY-specific handling: roll-decay hold warning + a backwardation proxy.
+    # True VIX term structure (spot vs 1-month future) isn't available here, so we
+    # approximate: a sharp recent rise in VIXY typically coincides with VIX-futures
+    # backwardation (acute stress).
+    if ticker == "VIXY":
+        out["vixy_hold_warning"] = "Max 3 day hold. Roll decay accelerates after day 3."
+        out["vix_backwardation_proxy"] = bool(ret_5d is not None and ret_5d > 5.0)
+
+    return out
 
 
 def _add_momentum_rank(results: dict[str, dict]) -> None:
@@ -167,22 +182,40 @@ def _add_momentum_rank(results: dict[str, dict]) -> None:
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def collect() -> dict[str, Any]:
-    """Download and analyse price data for the full universe."""
+    """Download and analyse price data for the full download list.
+
+    Tradeable instruments are returned as top-level keys (with momentum ranks).
+    Signal-only instruments (SPY, HYG, BTC-USD) are grouped under a separate
+    "signal_readings" key and are NOT ranked.
+    """
     if not _YF_AVAILABLE:
         logger.warning("yfinance not installed — returning empty price data")
         return {}
 
     settings.ensure_dirs()
-    results: dict[str, Any] = {}
+    tradeable: dict[str, Any] = {}
+    signal_readings: dict[str, Any] = {}
 
     for ticker in ALL_TICKERS:
         df = _download(ticker)
         if df is not None:
-            results[ticker] = _analyse(ticker, df)
+            analysis = _analyse(ticker, df)
         else:
-            results[ticker] = {"ticker": ticker, "error": "download_failed"}
+            analysis = {
+                "ticker": ticker,
+                "error": "download_failed",
+                "is_signal_only": ticker in settings.SIGNAL_ONLY,
+            }
+        if ticker in settings.SIGNAL_ONLY:
+            signal_readings[ticker] = analysis
+        else:
+            tradeable[ticker] = analysis
 
-    _add_momentum_rank(results)
+    # Rank momentum within the tradeable universe only
+    _add_momentum_rank(tradeable)
+
+    results: dict[str, Any] = dict(tradeable)
+    results["signal_readings"] = signal_readings
     return results
 
 

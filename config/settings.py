@@ -28,8 +28,112 @@ def ensure_dirs() -> None:
 
 # ── Universe ─────────────────────────────────────────────────────────────────
 
-UNIVERSE: list[str] = ["IBIT", "GLD", "SPY", "QQQ", "TLT", "USO", "HYG"]
+# Instruments actually traded
+UNIVERSE: list[str] = ["IBIT", "GLD", "SLV", "QQQ", "TLT", "XLE", "VIXY"]
+
+# Signal-only instruments (used as inputs, never traded)
+SIGNAL_ONLY: list[str] = ["SPY", "HYG", "BTC-USD"]
+
+# Combined download list for price_collector (deduped, order-preserving)
+PRICE_DOWNLOAD_LIST: list[str] = list(dict.fromkeys(UNIVERSE + SIGNAL_ONLY))
+
 CRYPTO_SYMBOLS: list[str] = ["BTC", "ETH"]
+
+# ── Per-instrument metadata ───────────────────────────────────────────────────
+
+INSTRUMENT_META: dict[str, dict] = {
+    "IBIT": {
+        "name": "iShares Bitcoin Trust",
+        "asset_class": "crypto",
+        "max_holding_days": 7,
+        "signal_sources": ["coinglass", "crypto_fear_greed", "trends"],
+        "notes": "BTC proxy. Use funding rate as primary signal.",
+    },
+    "GLD": {
+        "name": "SPDR Gold Shares",
+        "asset_class": "commodity",
+        "max_holding_days": 10,
+        "signal_sources": ["cot", "fred", "trends"],
+        "notes": "Core gold position. COT positioning is primary signal. "
+                 "Avoid doubling up with IAU.",
+    },
+    "SLV": {
+        "name": "iShares Silver Trust",
+        "asset_class": "commodity",
+        "max_holding_days": 7,
+        "signal_sources": ["cot", "trends"],
+        "notes": "Higher beta gold play. 2-3x gold moves. "
+                 "Only trade when GLD signal is strong.",
+    },
+    "QQQ": {
+        "name": "Invesco QQQ Trust",
+        "asset_class": "equity",
+        "max_holding_days": 10,
+        "signal_sources": ["fred", "sentiment", "calendar"],
+        "notes": "Primary equity instrument. Higher beta than SPY. "
+                 "Earnings calendar critical — check XLK earnings.",
+    },
+    "TLT": {
+        "name": "iShares 20+ Year Treasury Bond ETF",
+        "asset_class": "bonds",
+        "max_holding_days": 10,
+        "signal_sources": ["fred", "calendar"],
+        "notes": "Duration risk instrument since 2022, not pure safe haven. "
+                 "Treat as macro rates bet. FOMC dates are critical catalysts.",
+    },
+    "XLE": {
+        "name": "Energy Select Sector SPDR",
+        "asset_class": "equity",
+        "max_holding_days": 7,
+        "signal_sources": ["cot", "news", "trends"],
+        "notes": "Cleaner oil exposure than USO — no roll yield drag. "
+                 "Energy equities not pure crude proxy.",
+    },
+    "VIXY": {
+        "name": "ProShares VIX Short-Term Futures ETF",
+        "asset_class": "volatility",
+        "max_holding_days": 3,
+        "signal_sources": ["fred", "sentiment"],
+        "notes": "CRITICAL: max 3 day hold due to VIX futures roll decay. "
+                 "Only long when CNN Fear and Greed below 20 AND VIX in "
+                 "backwardation. Never hold overnight through FOMC.",
+    },
+    "SPY": {
+        "name": "SPDR S&P 500 ETF",
+        "asset_class": "equity",
+        "signal_only": True,
+        "notes": "Regime and benchmark signal only. Not traded.",
+    },
+    "HYG": {
+        "name": "iShares iBoxx High Yield Corporate Bond ETF",
+        "asset_class": "bonds",
+        "signal_only": True,
+        "notes": "Credit stress indicator. HYG falling while SPY holds = "
+                 "early warning. Not traded directly.",
+    },
+    "BTC-USD": {
+        "name": "Bitcoin spot price",
+        "asset_class": "crypto",
+        "signal_only": True,
+        "notes": "Raw BTC price signal for IBIT trades. "
+                 "Not traded directly on IBKR US.",
+    },
+}
+
+
+def get_tradeable_universe() -> list[str]:
+    """Returns only instruments that can be traded."""
+    return [t for t, m in INSTRUMENT_META.items() if not m.get("signal_only", False)]
+
+
+def get_instrument_meta(ticker: str) -> dict:
+    """Returns metadata for a ticker, empty dict if not found."""
+    return INSTRUMENT_META.get(ticker, {})
+
+
+def get_vixy_max_hold() -> int:
+    """Special accessor — VIXY has a hard 3-day max hold."""
+    return INSTRUMENT_META["VIXY"]["max_holding_days"]
 
 # ── Research config ───────────────────────────────────────────────────────────
 
