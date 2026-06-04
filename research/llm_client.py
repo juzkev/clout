@@ -240,9 +240,38 @@ def _build_universe_block() -> str:
     return "\n".join(lines)
 
 
+def _normalize_pass2(result: Any) -> dict:
+    """Coerce Pass 2 output into {'trade_ideas': [...], ...}.
+
+    LLMs sometimes return a bare JSON array of ideas, a single idea object, or
+    nest the list under an alternate key. Normalise all of these so downstream
+    code can rely on a dict with a 'trade_ideas' list.
+    """
+    if isinstance(result, list):
+        return {"trade_ideas": result}
+    if not isinstance(result, dict):
+        logger.warning("Pass 2 returned unexpected type {} — treating as no trades", type(result).__name__)
+        return {"trade_ideas": [], "no_trade_reason": "Unparseable Pass 2 output"}
+    if "trade_ideas" in result and isinstance(result["trade_ideas"], list):
+        return result
+    # Look for the list under a differently-named key
+    for key in ("ideas", "trades", "trade_idea", "recommendations"):
+        if isinstance(result.get(key), list):
+            result["trade_ideas"] = result.pop(key)
+            return result
+    # A single trade-idea object returned directly
+    if "ticker" in result:
+        return {"trade_ideas": [result]}
+    # Nothing idea-shaped found
+    result.setdefault("trade_ideas", [])
+    return result
+
+
 def _cap_holding_days(result: dict) -> dict:
     """Enforce per-instrument max_holding_days on Pass 2 ideas (cap, never reject)."""
     for idea in result.get("trade_ideas", []):
+        if not isinstance(idea, dict):
+            continue
         ticker = idea.get("ticker")
         meta = settings.get_instrument_meta(ticker)
         max_hold = meta.get("max_holding_days")
@@ -341,7 +370,9 @@ def run_pass2_ideas(
     except Exception as exc:
         raise RuntimeError(f"Pass 2 (Trade Ideas) failed: {exc}") from exc
 
-    # Enforce per-instrument holding-period limits (cap, never reject)
+    # Normalise shape (model may return a bare list / single object), then
+    # enforce per-instrument holding-period limits (cap, never reject)
+    result = _normalize_pass2(result)
     result = _cap_holding_days(result)
 
     n = len(result.get("trade_ideas", []))
@@ -424,6 +455,12 @@ def run_pass3_stress_test(
         result = _parse_json_response(raw, retry_fn=None if provider == "manual" else _retry)
     except Exception as exc:
         raise RuntimeError(f"Pass 3 JSON parse failed: {exc}") from exc
+
+    # Model may return a bare list of reviews instead of the wrapped object
+    if isinstance(result, list):
+        result = {"reviewed_ideas": result}
+    elif not isinstance(result, dict):
+        result = {"reviewed_ideas": []}
 
     for reviewed in result.get("reviewed_ideas", []):
         logger.info(

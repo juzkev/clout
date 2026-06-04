@@ -8,6 +8,7 @@ import pytest
 from config import settings
 from research.llm_client import (
     _cap_holding_days,
+    _normalize_pass2,
     _parse_json_response,
     merge_final_signals,
     run_pass3_stress_test,
@@ -217,3 +218,33 @@ def test_instrument_meta_complete():
         assert meta, f"{ticker} missing from INSTRUMENT_META"
         for key in required:
             assert key in meta, f"{ticker} missing '{key}'"
+
+
+# ── Pass 2 output normalisation ───────────────────────────────────────────────
+
+def test_normalize_pass2_bare_list():
+    """A bare JSON array of ideas is wrapped into {'trade_ideas': [...]}."""
+    ideas = [{"ticker": "IBIT", "holding_days": 5}, {"ticker": "GLD", "holding_days": 3}]
+    result = _normalize_pass2(ideas)
+    assert result["trade_ideas"] == ideas
+
+
+def test_normalize_pass2_single_object():
+    """A single trade-idea object is wrapped into a one-element list."""
+    idea = {"ticker": "QQQ", "direction": "long", "holding_days": 4}
+    result = _normalize_pass2(idea)
+    assert result["trade_ideas"] == [idea]
+
+
+def test_normalize_pass2_alternate_key():
+    """A list nested under an alternate key is moved to 'trade_ideas'."""
+    raw = {"ideas": [{"ticker": "SLV"}], "no_trade_reason": None}
+    result = _normalize_pass2(raw)
+    assert result["trade_ideas"] == [{"ticker": "SLV"}]
+    assert "ideas" not in result
+
+
+def test_normalize_then_cap_bare_list():
+    """End-to-end: a bare list flows through normalise + cap without error."""
+    capped = _cap_holding_days(_normalize_pass2([{"ticker": "VIXY", "holding_days": 9}]))
+    assert capped["trade_ideas"][0]["holding_days"] == 3
