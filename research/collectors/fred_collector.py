@@ -14,6 +14,7 @@ Returns an empty dict and logs a warning when FRED_API_KEY is missing.
 """
 
 import logging
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -24,6 +25,16 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 FRED_BASE = "https://api.stlouisfed.org/fred"
+
+# Transient statuses worth retrying (gateway / rate-limit / overload)
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 3
+
+
+def _scrub(text: str) -> str:
+    """Remove the API key from any string before it reaches a log."""
+    key = settings.FRED_API_KEY
+    return text.replace(key, "***") if key else text
 
 SERIES: dict[str, str] = {
     "T10Y2Y": "10Y-2Y Yield Curve Spread",
@@ -38,7 +49,7 @@ _LOOKBACK_DAYS = 20
 
 
 def _fetch_observations(series_id: str, api_key: str, limit: int = 30) -> list[dict]:
-    """Return the most recent `limit` observations for a FRED series."""
+    """Return the most recent `limit` observations, retrying transient errors."""
     url = f"{FRED_BASE}/series/observations"
     params = {
         "series_id": series_id,
@@ -47,9 +58,39 @@ def _fetch_observations(series_id: str, api_key: str, limit: int = 30) -> list[d
         "sort_order": "desc",
         "limit": limit,
     }
-    resp = requests.get(url, params=params, timeout=15)
-    resp.raise_for_status()
-    return resp.json().get("observations", [])
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            status = resp.status_code
+            if status in _RETRY_STATUS:
+                last_exc = requests.HTTPError(f"{status} from FRED for {series_id}")
+                if attempt < _MAX_RETRIES - 1:
+                    backoff = 2 ** attempt  # 1s, 2s, 4s
+                    logger.info(
+                        "FRED %s returned %d — retrying in %ds (attempt %d/%d)",
+                        series_id, status, backoff, attempt + 1, _MAX_RETRIES,
+                    )
+                    time.sleep(backoff)
+                    continue
+                raise last_exc
+            resp.raise_for_status()  # non-retryable 4xx (e.g. bad key) → raise now
+            return resp.json().get("observations", [])
+        except requests.exceptions.RequestException as exc:
+            # Connection/timeout errors with no response are also transient
+            if exc.response is not None and exc.response.status_code not in _RETRY_STATUS:
+                raise
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                backoff = 2 ** attempt
+                logger.info(
+                    "FRED %s request failed — retrying in %ds (attempt %d/%d)",
+                    series_id, backoff, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(backoff)
+
+    raise last_exc if last_exc else RuntimeError(f"FRED fetch failed for {series_id}")
 
 
 def _valid_obs(obs: list[dict]) -> list[dict]:
@@ -120,7 +161,7 @@ def collect() -> dict[str, Any]:
             else:
                 logger.warning("No valid data returned for FRED series %s", series_id)
         except Exception as exc:
-            logger.warning("Failed to fetch FRED series %s: %s", series_id, exc)
+            logger.warning("Failed to fetch FRED series %s: %s", series_id, _scrub(str(exc)))
 
     return results
 

@@ -36,6 +36,49 @@ def test_fred_prior_observation_monthly():
     assert val == 4.25
 
 
+def test_fred_scrub_removes_key(monkeypatch):
+    import config.settings as s
+    from research.collectors import fred_collector
+
+    monkeypatch.setattr(s, "FRED_API_KEY", "SECRETKEY123")
+    scrubbed = fred_collector._scrub("error for url ...api_key=SECRETKEY123&file_type=json")
+    assert "SECRETKEY123" not in scrubbed
+    assert "***" in scrubbed
+
+
+def test_fred_retries_transient_502(monkeypatch):
+    """A 502 is retried and the subsequent 200 succeeds."""
+    from research.collectors import fred_collector
+
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, status, payload=None):
+            self.status_code = status
+            self._payload = payload or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(f"{self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(502)
+        return FakeResp(200, {"observations": [{"date": "2026-05-01", "value": "4.25"}]})
+
+    monkeypatch.setattr(fred_collector.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(fred_collector.requests, "get", fake_get)
+
+    obs = fred_collector._fetch_observations("FEDFUNDS", "key", limit=60)
+    assert calls["n"] == 2  # one retry
+    assert obs[0]["value"] == "4.25"
+
+
 def test_fred_prior_observation_daily():
     """Daily series: ~20-day lookback lands ~20 calendar days back."""
     from datetime import date, timedelta
