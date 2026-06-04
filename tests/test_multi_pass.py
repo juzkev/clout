@@ -150,7 +150,9 @@ def test_merge_applies_size():
         date_str="2024-01-15",
     )
     assert len(result["final_trades"]) == 1
-    assert result["final_trades"][0]["size_multiplier"] == 0.5
+    # merge stores the Pass 3 trust multiplier; conviction sizing is compounded
+    # later in the execution layer, not here.
+    assert result["final_trades"][0]["pass3_size_multiplier"] == 0.5
 
 
 def test_early_exit_no_ideas():

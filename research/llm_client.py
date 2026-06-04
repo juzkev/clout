@@ -702,9 +702,9 @@ def merge_final_signals(
         review = reviews.get(ticker, {})
         recommendation = review.get("final_recommendation", "proceed")
         size_adj = review.get("size_adjustment", "full")
-        size_multiplier = _SIZE_MAP.get(size_adj, 1.0)
+        pass3_size_multiplier = _SIZE_MAP.get(size_adj, 1.0)
 
-        if recommendation == "skip" or size_multiplier == 0.0:
+        if recommendation == "skip" or pass3_size_multiplier == 0.0:
             logger.info("⛔ {} filtered out by stress test ({})", ticker, recommendation)
             filtered_count += 1
             continue
@@ -712,7 +712,9 @@ def merge_final_signals(
         final_trade: dict[str, Any] = {
             **idea,
             "conviction": review.get("adjusted_conviction", idea.get("conviction")),
-            "size_multiplier": size_multiplier,
+            # Pass 3 "trust" multiplier — conviction-based sizing is compounded with
+            # this in the execution layer (risk_manager.validate_all), not here.
+            "pass3_size_multiplier": pass3_size_multiplier,
             "bear_case": review.get("bear_case", ""),
             "hidden_risks": review.get("hidden_risks", []),
             "passed_stress_test": True,

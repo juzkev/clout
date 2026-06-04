@@ -18,27 +18,28 @@ from loguru import logger
 from config.settings import settings
 
 
-def check_position_size(ticker: str, size_pct: float, portfolio_value: float) -> None:
-    """Raise ValueError if a position exceeds its size cap.
+def check_position_size(ticker: str, size_pct: float, portfolio_value: float) -> float:
+    """Return the size to use, clamping VIXY and raising on other over-limit sizes.
 
-    VIXY has a stricter dedicated cap (vixy_max_portfolio_pct); everything else
-    is bounded by max_position_size_pct. size_pct is a fraction of the portfolio.
+    VIXY is a volatility instrument with a stricter dedicated cap
+    (vixy_max_portfolio_pct): rather than being rejected it is clamped to the cap.
+    Everything else is hard-bounded by max_position_size_pct and raises ValueError
+    when exceeded (so the caller can drop it). size_pct is a fraction of portfolio.
     """
     rl = settings.RISK_LIMITS
     if ticker == "VIXY":
-        limit = float(rl["vixy_max_portfolio_pct"])
-        if size_pct > limit:
-            raise ValueError(
-                f"VIXY size {size_pct:.2%} exceeds VIXY cap {limit:.2%} "
-                f"(portfolio ${portfolio_value:,.0f})"
-            )
-        return
+        cap = float(rl["vixy_max_portfolio_pct"])
+        if size_pct > cap:
+            logger.warning("VIXY size clamped to {}% (volatility instrument cap)", cap * 100)
+            return cap
+        return size_pct
     limit = float(rl["max_position_size_pct"])
     if size_pct > limit:
         raise ValueError(
             f"{ticker} size {size_pct:.2%} exceeds max position cap {limit:.2%} "
             f"(portfolio ${portfolio_value:,.0f})"
         )
+    return size_pct
 
 
 def check_drawdown(current_value: float, peak_value: float) -> str:
@@ -142,23 +143,43 @@ def validate_all(
         reason = "Friday rule active — no new trades"
         return _blocked_result(trades, [reason], risk_status, warnings)
 
-    # 4. Position sizing (conviction-based)
+    # Sizing pipeline, in order (hard caps applied LAST):
+    #   conviction tier  ×  Pass 3 trust multiplier  ×  correlation guard  →  hard caps
+
+    # 4. Conviction-based position sizing (how strong is the signal?)
     trades = apply_position_sizing(trades)
 
-    # 5. Correlation guard
+    # 5. Compound the Pass 3 trust multiplier (how much do we trust this idea?)
+    for t in trades:
+        pass3 = t.get("pass3_size_multiplier", 1.0)
+        conv_size = t.get("size_multiplier", 0.0)
+        final = conv_size * pass3
+        t["size_multiplier"] = final
+        logger.info(
+            "{}: conviction size {:.1f}% × Pass3 multiplier {} = {:.1f}%",
+            t.get("ticker", "?"), conv_size * 100, pass3, final * 100,
+        )
+
+    # 6. Correlation guard (GLD & SLV both long → SLV halved)
     trades = apply_correlation_guard(trades)
 
-    # 6. Per-trade size cap — drop violators
+    # 7. Hard caps LAST: VIXY clamp + max position size (drop non-VIXY over cap)
     approved: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
     for t in trades:
+        ticker = t.get("ticker", "?")
+        size = t.get("size_multiplier", 0.0)
         try:
-            check_position_size(t.get("ticker", "?"), t.get("size_multiplier", 0.0), current_value)
-            approved.append(t)
+            new_size = check_position_size(ticker, size, current_value)
         except ValueError as exc:
             logger.warning("Trade blocked by size check: {}", exc)
             warnings.append(str(exc))
             blocked.append(t)
+            continue
+        if ticker == "VIXY" and new_size < size:
+            t["vixy_clamped"] = True
+        t["size_multiplier"] = new_size
+        approved.append(t)
 
     return {
         "approved_trades": approved,
