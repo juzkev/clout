@@ -1,7 +1,15 @@
 """FRED macroeconomic data collector.
 
-Pulls the latest values and 20-day change for key series from the
-Federal Reserve Economic Data API (https://fred.stlouisfed.org/docs/api/fred/).
+Pulls the latest value and a recent (~20 calendar-day) change for key series
+from the Federal Reserve Economic Data API
+(https://fred.stlouisfed.org/docs/api/fred/).
+
+The recent change uses a DATE-BASED lookback so it is consistent across series
+frequencies: for daily series (yields, VIX) it is roughly a 20-day change; for
+monthly series (Fed Funds, CPI, unemployment) it resolves to the prior month's
+print (a true month-over-month change). The matched comparison date is returned
+as `prior_date` for transparency.
+
 Returns an empty dict and logs a warning when FRED_API_KEY is missing.
 """
 
@@ -26,6 +34,8 @@ SERIES: dict[str, str] = {
     "DGS10": "10-Year Treasury Yield",
 }
 
+_LOOKBACK_DAYS = 20
+
 
 def _fetch_observations(series_id: str, api_key: str, limit: int = 30) -> list[dict]:
     """Return the most recent `limit` observations for a FRED series."""
@@ -47,9 +57,26 @@ def _valid_obs(obs: list[dict]) -> list[dict]:
     return [o for o in obs if o.get("value", ".") != "."]
 
 
+def _prior_observation(
+    valid: list[dict], latest_date: str, lookback_days: int = _LOOKBACK_DAYS
+) -> tuple[float, str]:
+    """Find the observation on/just before (latest_date - lookback_days).
+
+    `valid` is in descending date order. This is frequency-aware: for monthly
+    series ~20 days before a month-start print lands in the prior month, so the
+    change becomes a true month-over-month change rather than a 20-period change.
+    """
+    target = date.fromisoformat(latest_date) - timedelta(days=lookback_days)
+    for o in valid:
+        if date.fromisoformat(o["date"]) <= target:
+            return float(o["value"]), o["date"]
+    # fallback: oldest observation we have
+    return float(valid[-1]["value"]), valid[-1]["date"]
+
+
 def _parse_series(series_id: str, api_key: str) -> dict[str, Any]:
-    """Fetch a series and return latest value, date, and 20-day change."""
-    obs = _fetch_observations(series_id, api_key, limit=40)
+    """Fetch a series and return latest value, date, and recent change."""
+    obs = _fetch_observations(series_id, api_key, limit=60)
     valid = _valid_obs(obs)
     if not valid:
         return {}
@@ -57,23 +84,23 @@ def _parse_series(series_id: str, api_key: str) -> dict[str, Any]:
     latest_val = float(valid[0]["value"])
     latest_date = valid[0]["date"]
 
-    # ~20 observations back (obs are in descending order)
-    prior_val = float(valid[min(20, len(valid) - 1)]["value"])
+    prior_val, prior_date = _prior_observation(valid, latest_date, _LOOKBACK_DAYS)
     change_20d = round(latest_val - prior_val, 4)
 
     result: dict[str, Any] = {
         "latest": latest_val,
         "latest_date": latest_date,
         "change_20d": change_20d,
+        "prior_date": prior_date,
     }
 
-    # For CPI, add year-over-year change using obs from ~12 months ago
+    # For CPI, add year-over-year change using the observation ~12 months back
     if series_id == "CPIAUCSL":
-        obs_long = _fetch_observations(series_id, api_key, limit=15)
-        valid_long = _valid_obs(obs_long)
-        if len(valid_long) >= 13:
-            yoy_prior = float(valid_long[12]["value"])
-            result["yoy_pct"] = round((latest_val / yoy_prior - 1) * 100, 2)
+        yoy_target = date.fromisoformat(latest_date) - timedelta(days=365)
+        for o in valid:
+            if date.fromisoformat(o["date"]) <= yoy_target:
+                result["yoy_pct"] = round((latest_val / float(o["value"]) - 1) * 100, 2)
+                break
 
     return result
 

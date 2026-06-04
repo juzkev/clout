@@ -19,6 +19,38 @@ def test_fred_no_key_returns_empty():
     assert result == {}
 
 
+def test_fred_prior_observation_monthly():
+    """Monthly series: a ~20-day lookback resolves to the PREVIOUS month, not 20 months."""
+    from research.collectors.fred_collector import _prior_observation
+
+    # Descending monthly observations (FEDFUNDS-style, month-start dated)
+    monthly = [
+        {"date": "2026-05-01", "value": "4.25"},
+        {"date": "2026-04-01", "value": "4.25"},
+        {"date": "2026-03-01", "value": "4.50"},
+        {"date": "2026-02-01", "value": "4.50"},
+        {"date": "2026-01-01", "value": "4.75"},
+    ]
+    val, prior_date = _prior_observation(monthly, "2026-05-01", 20)
+    assert prior_date == "2026-04-01"  # previous month, NOT 20 months back
+    assert val == 4.25
+
+
+def test_fred_prior_observation_daily():
+    """Daily series: ~20-day lookback lands ~20 calendar days back."""
+    from datetime import date, timedelta
+    from research.collectors.fred_collector import _prior_observation
+
+    latest = date(2026, 5, 1)
+    daily = [
+        {"date": (latest - timedelta(days=i)).isoformat(), "value": str(100 - i)}
+        for i in range(0, 40)
+    ]
+    val, prior_date = _prior_observation(daily, latest.isoformat(), 20)
+    assert prior_date == (latest - timedelta(days=20)).isoformat()
+    assert val == 80.0
+
+
 # ── Sentiment collector ───────────────────────────────────────────────────────
 
 def test_sentiment_returns_three_keys(monkeypatch):

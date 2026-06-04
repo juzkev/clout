@@ -51,11 +51,16 @@ def _fmt_fred(fred: dict) -> str:
         label = vals.get("label", series_id)
         latest = vals.get("latest", "N/A")
         chg = vals.get("change_20d", "N/A")
+        prior_date = vals.get("prior_date")
         yoy = vals.get("yoy_pct")
         line = f"  {label} ({series_id}): {latest}"
         if yoy is not None:
             line += f"  [YoY: {yoy:+.2f}%]"
-        line += f"  [20d chg: {chg:+.4f}]" if isinstance(chg, float) else f"  [20d chg: {chg}]"
+        if isinstance(chg, float):
+            since = f" since {prior_date}" if prior_date else ""
+            line += f"  [change: {chg:+.4f}{since}]"
+        else:
+            line += f"  [change: {chg}]"
         lines.append(line)
     return "\n".join(lines)
 
