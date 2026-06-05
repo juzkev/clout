@@ -215,6 +215,8 @@ def run(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "date": date_str,
             "market_regime": regime,
+            "pass2_trade_ideas": trade_ideas.get("trade_ideas", []),
+            "pass3_stress_test": [],
             "final_trades": [],
             "trades_filtered_out": 0,
             "portfolio_risks": [],
@@ -276,6 +278,8 @@ def run(
     risk_manager.apply_position_sizing(signals["final_trades"])
 
     # ── Step 7c: Save ─────────────────────────────────────────────────────────
+    signals["pass2_trade_ideas"] = trade_ideas.get("trade_ideas", [])
+    signals["pass3_stress_test"] = stress_test.get("reviewed_ideas", [])
     out_path = _SIGNALS_DIR / f"{date_str}_signals.json"
     out_path.write_text(json.dumps(signals, indent=2), encoding="utf-8")
     logger.info("Signals saved to {}", out_path)

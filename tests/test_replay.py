@@ -142,6 +142,25 @@ def test_replay_signals_empty_final_trades():
     assert records == []
 
 
+def test_replay_signals_uses_final_trades_not_pass2():
+    """replay_signals replays only final_trades even when pass2_trade_ideas is present."""
+    signals = {
+        "date": "2024-01-01",
+        "final_trades": [
+            {"ticker": "SPY", "direction": "long", "stop_loss_pct": 3, "target_pct": 5, "holding_days": 5},
+        ],
+        "pass2_trade_ideas": [
+            {"ticker": "SPY", "direction": "long", "stop_loss_pct": 3, "target_pct": 5, "holding_days": 5},
+            {"ticker": "TLT", "direction": "short", "stop_loss_pct": 3, "target_pct": 5, "holding_days": 5},
+        ],
+        "pass3_stress_test": [],
+    }
+    win_bars = _bars([("2024-01-02", 100, 101, 99, 100), ("2024-01-03", 101, 106, 100, 105)])
+    records = replay_signals(signals, lambda t, s, n: win_bars)
+    assert len(records) == 1
+    assert records[0]["ticker"] == "SPY"
+
+
 def test_replay_signals_multiple_trades():
     signals = {
         "date": "2024-01-01",
