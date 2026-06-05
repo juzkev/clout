@@ -46,6 +46,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "IBIT": {
         "name": "iShares Bitcoin Trust",
         "asset_class": "crypto",
+        "rate_sensitive": True,
         "max_holding_days": 7,
         "signal_sources": ["coinglass", "crypto_fear_greed", "trends"],
         "notes": "BTC proxy. Use funding rate as primary signal.",
@@ -53,6 +54,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "GLD": {
         "name": "SPDR Gold Shares",
         "asset_class": "commodity",
+        "rate_sensitive": True,
         "max_holding_days": 10,
         "signal_sources": ["cot", "fred", "trends"],
         "notes": "Core gold position. COT positioning is primary signal. "
@@ -61,6 +63,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "SLV": {
         "name": "iShares Silver Trust",
         "asset_class": "commodity",
+        "rate_sensitive": True,
         "max_holding_days": 7,
         "signal_sources": ["cot", "trends"],
         "notes": "Higher beta gold play. 2-3x gold moves. "
@@ -69,6 +72,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "QQQ": {
         "name": "Invesco QQQ Trust",
         "asset_class": "equity",
+        "rate_sensitive": True,
         "max_holding_days": 10,
         "signal_sources": ["fred", "sentiment", "calendar"],
         "notes": "Primary equity instrument. Higher beta than SPY. "
@@ -77,6 +81,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "TLT": {
         "name": "iShares 20+ Year Treasury Bond ETF",
         "asset_class": "bonds",
+        "rate_sensitive": True,
         "max_holding_days": 10,
         "signal_sources": ["fred", "calendar"],
         "notes": "Duration risk instrument since 2022, not pure safe haven. "
@@ -85,6 +90,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "XLE": {
         "name": "Energy Select Sector SPDR",
         "asset_class": "equity",
+        "rate_sensitive": False,
         "max_holding_days": 7,
         "signal_sources": ["cot", "news", "trends"],
         "notes": "Cleaner oil exposure than USO — no roll yield drag. "
@@ -93,6 +99,7 @@ INSTRUMENT_META: dict[str, dict] = {
     "VIXY": {
         "name": "ProShares VIX Short-Term Futures ETF",
         "asset_class": "volatility",
+        "rate_sensitive": False,
         "max_holding_days": 3,
         "signal_sources": ["fred", "sentiment"],
         "notes": "CRITICAL: max 3 day hold due to VIX futures roll decay. "

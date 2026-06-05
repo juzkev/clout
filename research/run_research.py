@@ -25,6 +25,7 @@ from research.collectors import (
     calendar_collector,
     cot_collector,
     crypto_collector,
+    fed_futures_collector,
     fred_collector,
     news_collector,
     price_collector,
@@ -142,7 +143,7 @@ def run(
 
     print(f"\n=== Trading Research Run: {date_str} | Provider: {provider} ===\n")
 
-    # ── Step 2: Run all 8 collectors in parallel ──────────────────────────────
+    # ── Step 2: Run all 9 collectors in parallel ──────────────────────────────
     collector_fns = {
         "fred": fred_collector.collect,
         "sentiment": sentiment_collector.collect,
@@ -152,6 +153,7 @@ def run(
         "trends": trends_collector.collect,
         "cot": cot_collector.collect,
         "calendar": calendar_collector.collect,
+        "fed_futures": fed_futures_collector.collect,
     }
 
     collected: dict[str, dict] = {}
@@ -178,6 +180,7 @@ def run(
             sentiment_data=collected.get("sentiment", {}),
             price_data=collected.get("price", {}),
             calendar_data=collected.get("calendar", {}),
+            fed_futures_data=collected.get("fed_futures", {}),
             provider=provider,
             date_str=date_str,
         )

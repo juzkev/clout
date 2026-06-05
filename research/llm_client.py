@@ -59,10 +59,21 @@ Return ONLY this exact JSON object (no markdown, no commentary):
   "key_signals": ["...", "..."],
   "regime_reasoning": "2-3 sentence explanation",
   "cross_asset_message": "what bonds/gold/crypto/equities jointly imply",
-  "upcoming_risks": ["...", "..."]
+  "upcoming_risks": ["...", "..."],
+  "rate_regime": "easing | tightening | on_hold | transitioning",
+  "rate_regime_implication": {
+    "GLD": "bullish | bearish | neutral",
+    "TLT": "bullish | bearish | neutral",
+    "QQQ": "bullish | bearish | neutral",
+    "IBIT": "bullish | bearish | neutral"
+  }
 }
 IMPORTANT: "confidence" is an INTEGER from 1 to 5 (not a probability). Use the key
-"regime_reasoning" (not "narrative")."""
+"regime_reasoning" (not "narrative").
+Set "rate_regime" from the FORWARD RATE PRICING, REAL YIELDS, RATE MOMENTUM, and
+CREDIT CONDITIONS sections. "rate_regime_implication" states, for each
+rate-sensitive instrument, whether the rate path is bullish/bearish/neutral
+(e.g. falling real yields → bullish GLD; easing → bullish TLT)."""
 
 _PASS2_SCHEMA = """\
 Return ONLY this exact JSON object (no markdown, no commentary):
@@ -540,6 +551,40 @@ def _normalize_pass3(result: Any) -> dict:
 
 # ── Pass 1: Regime Classification ────────────────────────────────────────────
 
+def _pick(data: dict, *keys: str) -> dict:
+    """Return only the requested keys that are present in `data`."""
+    return {k: data[k] for k in keys if k in data}
+
+
+def _build_rates_block(macro_data: dict, fed_futures_data: dict) -> str:
+    """Format the forward-rate / real-yield / credit sections for Pass 1."""
+    forward = fed_futures_data or {"data_source": "unavailable"}
+    real_yields = _pick(
+        macro_data,
+        "real_yield_10y", "real_yield_10y_interpretation",
+        "real_yield_10y_20d_change", "real_yield_10y_20d_change_interpretation",
+        "breakeven_inflation_10y", "breakeven_inflation_10y_interpretation",
+        "forward_inflation_5y5y", "forward_inflation_5y5y_interpretation",
+    )
+    momentum = _pick(
+        macro_data,
+        "yield_curve_momentum_20d", "yield_curve_momentum_label",
+        "yield_curve_momentum_interpretation",
+        "dgs10_vs_200sma", "dgs10_200sma", "dgs10_vs_200sma_interpretation",
+    )
+    credit = _pick(
+        macro_data,
+        "credit_spread_oas", "credit_spread_oas_interpretation",
+        "credit_spread_20d_change", "credit_spread_20d_change_interpretation",
+    )
+    return "\n\n".join([
+        f"FORWARD RATE PRICING:\n{json.dumps(forward, indent=2)}",
+        f"REAL YIELDS AND INFLATION EXPECTATIONS:\n{json.dumps(real_yields, indent=2)}",
+        f"RATE MOMENTUM:\n{json.dumps(momentum, indent=2)}",
+        f"CREDIT CONDITIONS:\n{json.dumps(credit, indent=2)}",
+    ])
+
+
 def run_pass1_regime(
     macro_data: dict,
     sentiment_data: dict,
@@ -547,6 +592,7 @@ def run_pass1_regime(
     calendar_data: dict,
     provider: str,
     date_str: str,
+    fed_futures_data: dict | None = None,
 ) -> dict:
     """Classify current market regime from macro + sentiment + price + calendar."""
     price_summary = _price_summary_for_pass1(price_data)
@@ -555,6 +601,7 @@ def run_pass1_regime(
         f"SENTIMENT INDICATORS:\n{json.dumps(sentiment_data, indent=2)}",
         f"CROSS-ASSET PRICE SUMMARY:\n{json.dumps(price_summary, indent=2)}",
         f"UPCOMING CATALYSTS:\n{json.dumps(calendar_data, indent=2)}",
+        _build_rates_block(macro_data, fed_futures_data or {}),
         _PASS1_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass1_regime.txt")
@@ -607,6 +654,10 @@ def run_pass2_ideas(
             "Each trade idea MUST include a 'max_holding_days' field equal to the "
             "instrument's max hold listed above, and its 'holding_days' MUST NOT "
             "exceed that value.\n"
+            "For rate-sensitive instruments (GLD, TLT, QQQ, IBIT, SLV), consult the "
+            "regime's 'rate_regime' and 'rate_regime_implication': do not propose a "
+            "direction that contradicts the rate-path implication for that ticker "
+            "without an explicit overriding catalyst.\n"
             "Only generate high-conviction ideas (4-5/5).\n"
             "It is better to have no trade than a bad trade."
         ),
