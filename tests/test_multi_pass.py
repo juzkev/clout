@@ -245,8 +245,11 @@ def test_normalize_pass2_alternate_key():
     """A list nested under an alternate key is moved to 'trade_ideas'."""
     raw = {"ideas": [{"ticker": "SLV"}], "no_trade_reason": None}
     result = _normalize_pass2(raw)
-    assert result["trade_ideas"] == [{"ticker": "SLV"}]
     assert "ideas" not in result
+    assert len(result["trade_ideas"]) == 1
+    assert result["trade_ideas"][0]["ticker"] == "SLV"
+    # normalisation also fills the signal-type classification defaults
+    assert result["trade_ideas"][0]["signal_type"] == "situational"
 
 
 def test_normalize_then_cap_bare_list():

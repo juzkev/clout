@@ -1,11 +1,12 @@
 """Tests for the minimum-viable risk system and thesis-field tracking."""
 
+import json
 from datetime import datetime
 
 import pytest
 from loguru import logger
 
-from execution import risk_guard
+from execution import risk_guard, trade_logger
 from research import risk_manager
 from research.llm_client import merge_final_signals
 
@@ -177,3 +178,74 @@ def test_pass3_skip_survives_to_execution(monkeypatch):
         merged["final_trades"], {"current_value": 10000, "peak_value": 10000, "daily_pnl_pct": 0.0}
     )
     assert "GLD" not in [t["ticker"] for t in result["approved_trades"]]
+
+
+def test_signal_type_fields_present():
+    """Signal-type classification fields survive merge_final_signals into final trades."""
+    regime = {"regime": "risk_on", "confidence": 4}
+    trade_ideas = {
+        "trade_ideas": [
+            {
+                "ticker": "IBIT",
+                "direction": "long",
+                "conviction": 4,
+                "reasoning": "Funding flipped negative.",
+                "invalidation": "Funding turns positive.",
+                "signal_type": "rule_based",
+                "signal_type_reasoning": "Single funding-rate threshold crossed.",
+                "primary_rule": "if btc_funding_rate < 0 then long IBIT",
+                "rule_backtest_status": "not_tested",
+                "validation_method": "both",
+                "contributing_signals": {"rule_based": ["funding_rate"], "situational": []},
+            }
+        ]
+    }
+    stress_test = {
+        "reviewed_ideas": [
+            {"ticker": "IBIT", "final_recommendation": "proceed", "size_adjustment": "full", "adjusted_conviction": 4}
+        ],
+        "portfolio_level_risks": [],
+        "overall_assessment": "",
+    }
+    result = merge_final_signals(regime, trade_ideas, stress_test, "2024-01-15")
+    assert result["final_trades"]
+    trade = result["final_trades"][0]
+    for key in (
+        "signal_type",
+        "primary_rule",
+        "rule_backtest_status",
+        "validation_method",
+        "contributing_signals",
+    ):
+        assert key in trade, f"missing {key}"
+    assert trade["signal_type"] == "rule_based"
+    assert trade["rule_backtest_status"] == "not_tested"
+
+
+def test_rule_backtest_status_update(tmp_path, monkeypatch):
+    """update_rule_backtest_status updates only records sharing the primary_rule."""
+    monkeypatch.setattr(trade_logger, "_TRADES_DIR", tmp_path)
+    paper = tmp_path / "paper"
+    paper.mkdir(parents=True)
+
+    def _write(name: str, rule: str) -> None:
+        (paper / name).write_text(json.dumps({
+            "ticker": name.split("_")[0],
+            "primary_rule": rule,
+            "rule_backtest_status": "not_tested",
+        }))
+
+    _write("IBIT_2024-01-01_open.json", "if btc_funding_rate < 0 then long IBIT")
+    _write("GLD_2024-01-02_open.json", "if btc_funding_rate < 0 then long IBIT")
+    _write("QQQ_2024-01-03_open.json", "if rsi > 70 then short QQQ")
+
+    trade_logger.update_rule_backtest_status(
+        "if btc_funding_rate < 0 then long IBIT", "tested_edge_confirmed"
+    )
+
+    a = json.loads((paper / "IBIT_2024-01-01_open.json").read_text())
+    b = json.loads((paper / "GLD_2024-01-02_open.json").read_text())
+    c = json.loads((paper / "QQQ_2024-01-03_open.json").read_text())
+    assert a["rule_backtest_status"] == "tested_edge_confirmed"
+    assert b["rule_backtest_status"] == "tested_edge_confirmed"
+    assert c["rule_backtest_status"] == "not_tested"

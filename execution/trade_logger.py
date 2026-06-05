@@ -61,6 +61,14 @@ def open_trade(signal: dict[str, Any], entry_price: float, size_usd: float) -> d
         "exit_price": None,
         "pnl_pct": None,
         "signal_sources": signal.get("signal_sources", []),
+        # Signal-type / rule-tracking metadata
+        "signal_type": signal.get("signal_type"),
+        "primary_rule": signal.get("primary_rule"),
+        "rule_backtest_status": signal.get("rule_backtest_status", "not_tested"),
+        "validation_method": signal.get("validation_method"),
+        "contributing_signals": signal.get(
+            "contributing_signals", {"rule_based": [], "situational": []}
+        ),
     }
     path = _TRADES_DIR / f"{record['ticker']}_{entry_date}_open.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -146,6 +154,82 @@ def get_closed_trades(days_back: int = 30) -> list[dict[str, Any]]:
     return trades
 
 
+def _signal_type_breakdown(closed: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per-signal-type {count, win_rate, avg_pnl_pct} over the given closed trades."""
+    breakdown: dict[str, dict[str, Any]] = {}
+    for st in ("rule_based", "situational", "hybrid"):
+        bucket = [t for t in closed if t.get("signal_type") == st]
+        count = len(bucket)
+        if count == 0:
+            breakdown[st] = {"count": 0, "win_rate": 0.0, "avg_pnl_pct": 0.0}
+            continue
+        wins = sum(1 for t in bucket if (t.get("pnl_pct") or 0.0) > 0)
+        avg = sum((t.get("pnl_pct") or 0.0) for t in bucket) / count
+        breakdown[st] = {
+            "count": count,
+            "win_rate": round(wins / count, 3),
+            "avg_pnl_pct": round(avg, 2),
+        }
+    return breakdown
+
+
+def update_rule_backtest_status(primary_rule: str, status: str) -> None:
+    """Update rule_backtest_status on all records sharing `primary_rule`.
+
+    Scans open trade files (incl. logs/trades/paper/) and closed trades from the
+    last 30 days. `status` must be 'tested_edge_confirmed' or 'tested_no_edge'.
+    """
+    valid = {"tested_edge_confirmed", "tested_no_edge"}
+    if status not in valid:
+        raise ValueError(f"Invalid status {status!r}. Must be one of {sorted(valid)}")
+    if not primary_rule:
+        logger.warning("update_rule_backtest_status called with empty primary_rule — no-op")
+        return
+
+    _ensure_dir()
+    updated = 0
+
+    # Open files anywhere under logs/trades/ (covers the paper/ subdir)
+    for path in glob.glob(str(_TRADES_DIR / "**" / "*_open.json"), recursive=True):
+        if _update_rule_in_file(path, primary_rule, status, require_recent=False):
+            updated += 1
+
+    # Closed files from the last 30 days
+    for path in glob.glob(str(_TRADES_DIR / "**" / "*_closed.json"), recursive=True):
+        if _update_rule_in_file(path, primary_rule, status, require_recent=True):
+            updated += 1
+
+    logger.info("Updated rule_backtest_status for {} record(s) matching rule {!r} → {}",
+                updated, primary_rule, status)
+
+
+def _update_rule_in_file(path: str, primary_rule: str, status: str, require_recent: bool) -> bool:
+    try:
+        rec = json.loads(open(path, encoding="utf-8").read())
+    except Exception as exc:
+        logger.warning("Failed to read {}: {}", path, exc)
+        return False
+    if rec.get("primary_rule") != primary_rule:
+        return False
+    if require_recent:
+        closed_at = rec.get("closed_at")
+        if not closed_at:
+            return False
+        try:
+            if datetime.fromisoformat(closed_at) < datetime.now(timezone.utc) - timedelta(days=30):
+                return False
+        except ValueError:
+            return False
+    rec["rule_backtest_status"] = status
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f, indent=2)
+    except Exception as exc:
+        logger.warning("Failed to write {}: {}", path, exc)
+        return False
+    return True
+
+
 def summarise_week() -> dict[str, Any]:
     """Summarise the last 7 days of closed trades for the weekly review."""
     closed = get_closed_trades(days_back=7)
@@ -160,6 +244,7 @@ def summarise_week() -> dict[str, Any]:
         "worst_trade": None,
         "thesis_accuracy": 0.0,
         "signal_source_hits": {},
+        "by_signal_type": _signal_type_breakdown(closed),
     }
     if total == 0:
         return result

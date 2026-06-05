@@ -81,12 +81,33 @@ Return ONLY this exact JSON object (no markdown, no commentary):
       "holding_days": <integer, must be <= max_holding_days>,
       "max_holding_days": <integer from the universe constraints above>,
       "invalidation": "what would prove this idea wrong",
-      "reasoning": "..."
+      "reasoning": "...",
+      "signal_type": "rule_based | situational | hybrid",
+      "signal_type_reasoning": "one sentence justifying the signal_type",
+      "primary_rule": null,
+      "rule_backtest_status": "not_tested",
+      "contributing_signals": {"rule_based": [], "situational": []},
+      "validation_method": "backtest | paper_trade | both"
     }
   ]
 }
 Output 0-3 ideas (empty list + a "no_trade_reason" string is valid).
-Use the key "conviction" (integer 1-5) — NOT "confidence"."""
+Use the key "conviction" (integer 1-5) — NOT "confidence".
+For "primary_rule": give an explicit if/then rule string for rule_based/hybrid
+ideas, otherwise null. "rule_backtest_status" is always "not_tested" here.
+Set "validation_method" from "signal_type": rule_based→"both",
+situational→"paper_trade", hybrid→"both"."""
+
+_PASS2_CLASSIFICATION = """\
+SIGNAL TYPE CLASSIFICATION (set signal_type per idea):
+- rule_based: fires because ONE quantitative threshold was crossed; definable
+  as an explicit if/then rule; testable historically.
+- situational: a unique confluence of conditions, news, or qualitative factors
+  unlikely to repeat identically.
+- hybrid: a rule-based anchor with situational factors meaningfully affecting
+  conviction.
+Put the concrete signals that drove the idea into contributing_signals, split
+into the "rule_based" and "situational" buckets."""
 
 _PASS3_SCHEMA = """\
 Return ONLY this exact JSON object (no markdown, no commentary):
@@ -335,6 +356,28 @@ _IDEA_FIELD_ALIASES = {
 }
 
 
+_VALIDATION_METHOD = {"rule_based": "both", "situational": "paper_trade", "hybrid": "both"}
+
+
+def _fill_signal_type_defaults(idea: dict) -> None:
+    """Ensure every idea carries the signal-type / thesis classification fields."""
+    signal_type = idea.get("signal_type")
+    if signal_type not in _VALIDATION_METHOD:
+        signal_type = "situational"  # conservative default → paper_trade only
+        idea["signal_type"] = signal_type
+    idea.setdefault("signal_type_reasoning", "")
+    idea.setdefault("primary_rule", None)
+    idea["rule_backtest_status"] = "not_tested"  # always at generation time
+    cs = idea.get("contributing_signals")
+    if not isinstance(cs, dict):
+        cs = {}
+    cs.setdefault("rule_based", [])
+    cs.setdefault("situational", [])
+    idea["contributing_signals"] = cs
+    # validation_method is derived from signal_type
+    idea["validation_method"] = _VALIDATION_METHOD[signal_type]
+
+
 def _normalize_idea(idea: dict) -> dict:
     """Map per-idea field aliases (e.g. confidence → conviction) in place."""
     if not isinstance(idea, dict):
@@ -345,6 +388,7 @@ def _normalize_idea(idea: dict) -> dict:
                 if alias in idea:
                     idea[canonical] = idea[alias]
                     break
+    _fill_signal_type_defaults(idea)
     return idea
 
 
@@ -566,6 +610,7 @@ def run_pass2_ideas(
             "Only generate high-conviction ideas (4-5/5).\n"
             "It is better to have no trade than a bad trade."
         ),
+        _PASS2_CLASSIFICATION,
         _PASS2_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass2_ideas.txt")

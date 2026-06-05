@@ -42,15 +42,22 @@ def _build_prompt(summary: dict, closed_trades: list[dict]) -> str:
         lines.append("")
 
     lines += [
+        "=== PERFORMANCE BY SIGNAL TYPE ===",
+        json.dumps(summary.get("by_signal_type", {}), indent=2, default=str),
+        "",
         "=== YOUR TASK ===",
         "1. Identify which signal sources predicted correctly vs incorrectly.",
         "2. For each loss, distinguish a BAD SIGNAL from BAD RISK MANAGEMENT as the cause.",
         "3. Flag any pattern of persistent bullish or bearish bias.",
         "4. Recommend whether to adjust conviction thresholds for any signal source.",
+        "5. Compare performance across signal types (rule_based vs situational vs "
+        "hybrid): which is carrying the results, and is any type a net drag?",
+        "6. Flag any rule_based signal (with its primary_rule) that has accumulated "
+        "enough trades to justify a formal backtest, and state the rule explicitly.",
     ]
     if too_few:
         lines.append(
-            f"5. NOTE: only {summary['total_trades']} trade(s) this week (<10) — "
+            f"7. NOTE: only {summary['total_trades']} trade(s) this week (<10) — "
             "explicitly caution that this is too small a sample to draw firm conclusions."
         )
     return "\n".join(lines)
