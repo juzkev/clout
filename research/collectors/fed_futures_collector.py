@@ -16,6 +16,7 @@ research pipeline always runs.
 """
 
 import logging
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -28,16 +29,30 @@ logger = logging.getLogger(__name__)
 _CME_URL = (
     "https://www.cmegroup.com/CmeWS/mvc/FedWatch/rateProbability.getCurrent.do"
 )
+# Loaded first to obtain Akamai bot-protection cookies before calling the API.
+_CME_TOOL_PAGE = (
+    "https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"
+)
 _FRED_BASE = "https://api.stlouisfed.org/fred"
 _TIMEOUT = 15
 
-# A browser-like UA — the CME endpoint rejects the default python-requests UA.
+# Realistic browser headers. CME sits behind Akamai, which 403s requests that
+# don't look like a browser (default python-requests UA, missing Referer, etc.).
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": _CME_TOOL_PAGE,
+    "Origin": "https://www.cmegroup.com",
+    "sec-ch-ua": '"Chromium";v="124", "Not(A:Brand";v="24", "Google Chrome";v="124"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 
@@ -71,14 +86,38 @@ def _unavailable(note: str) -> dict[str, Any]:
 
 # ── Primary: CME FedWatch ──────────────────────────────────────────────────────
 
+def _fetch_cme_payload() -> Any:
+    """Prime Akamai cookies via the tool page, then call the FedWatch API.
+
+    Raises on any network/HTTP error so the caller can fall back.
+    """
+    session = requests.Session()
+    session.headers.update(_HEADERS)
+    # Step 1: load the tool page so Akamai sets its bot-detection cookies.
+    try:
+        session.get(_CME_TOOL_PAGE, timeout=_TIMEOUT)
+    except Exception as exc:
+        logger.debug("CME tool-page priming request failed (continuing): %s", exc)
+    # Step 2: call the JSON API with a cache-busting param, carrying any cookies.
+    resp = session.get(
+        _CME_URL,
+        params={"_": int(time.time() * 1000)},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _try_cme() -> dict[str, Any] | None:
     """Attempt the CME FedWatch endpoint. Return a populated dict or None."""
     try:
-        resp = requests.get(_CME_URL, headers=_HEADERS, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = _fetch_cme_payload()
     except Exception as exc:
-        logger.warning("CME FedWatch fetch failed: %s", exc)
+        logger.warning(
+            "CME FedWatch fetch failed (%s) — falling back. CME is Akamai-protected "
+            "and may 403 server-side requests; the FRED proxy is the reliable source.",
+            exc,
+        )
         return None
 
     try:

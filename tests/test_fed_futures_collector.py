@@ -51,6 +51,8 @@ def test_returns_dict_on_failure(monkeypatch):
     def _boom(*args, **kwargs):
         raise requests.exceptions.ConnectionError("network down")
 
+    # Cover both the session-based CME fetch and the module-level FRED proxy call.
+    monkeypatch.setattr(fed_futures_collector.requests.Session, "get", _boom)
     monkeypatch.setattr(fed_futures_collector.requests, "get", _boom)
     monkeypatch.setattr(fed_futures_collector.settings, "FRED_API_KEY", "")
 
@@ -62,6 +64,44 @@ def test_returns_dict_on_failure(monkeypatch):
     assert result["cuts_priced_12m"] is None
     assert result["interpretation"] in ("dovish", "neutral", "hawkish")
     assert result["note"]
+
+
+def test_cme_primes_cookies_then_parses(monkeypatch):
+    """_try_cme loads the tool page first (Akamai cookies), then parses the API."""
+    calls: list[str] = []
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "fomcMeetings": [
+                    {
+                        "meetingDate": "2026-06-17",
+                        "cutProbability": 65.0,   # percentage form
+                        "hikeProbability": 0.0,
+                        "noChangeProbability": 35.0,
+                    }
+                ]
+            }
+
+    class _FakeSession:
+        headers: dict = {}
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp()
+
+    monkeypatch.setattr(fed_futures_collector.requests, "Session", _FakeSession)
+
+    result = fed_futures_collector.collect()
+    # Tool page primed before the API call
+    assert calls[0] == fed_futures_collector._CME_TOOL_PAGE
+    assert any("rateProbability" in c for c in calls)
+    assert result["data_source"] == "cme_fedwatch"
+    assert result["next_meeting"]["cut_probability"] == pytest.approx(0.65)  # 65% → 0.65
+    assert result["interpretation"] == "dovish"
 
 
 def test_fred_proxy_used_when_cme_fails(monkeypatch):
