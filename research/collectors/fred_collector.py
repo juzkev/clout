@@ -48,7 +48,16 @@ SERIES: dict[str, str] = {
     "DFII10": "10Y Real Yield (TIPS)",
     "DFII5": "5Y Real Yield (TIPS)",
     "BAMLH0A0HYM2": "ICE BofA US High Yield OAS Credit Spread",
+    # ── Tier 2: labor market ──────────────────────────────────────────────────
+    "PAYEMS": "Nonfarm Payrolls (Total Nonfarm, level)",
+    "JTSJOL": "JOLTS Job Openings",
+    "ICSA": "Initial Jobless Claims",
+    "AHETPI": "Avg Hourly Earnings (Production/Nonsupervisory)",
+    "UNEMPLOY": "Unemployment Level",
 }
+
+# Series for which a 12-month YoY % change is meaningful.
+_YOY_SERIES = {"CPIAUCSL", "AHETPI"}
 
 _LOOKBACK_DAYS = 20
 _SMA_WINDOW = 200
@@ -141,8 +150,9 @@ def _parse_series(series_id: str, api_key: str) -> dict[str, Any]:
         "prior_date": prior_date,
     }
 
-    # For CPI, add year-over-year change using the observation ~12 months back
-    if series_id == "CPIAUCSL":
+    # For level series (CPI, wages), add year-over-year change using the
+    # observation ~12 months back
+    if series_id in _YOY_SERIES:
         yoy_target = date.fromisoformat(latest_date) - timedelta(days=365)
         for o in valid:
             if date.fromisoformat(o["date"]) <= yoy_target:
@@ -223,6 +233,74 @@ def _credit_spread_change_interpretation(change: float) -> str:
     if change < -0.3:
         return "tightening_risk_on"
     return "credit_spreads_stable"
+
+
+# ── Tier 2 labor-market interpretation helpers ────────────────────────────────
+
+def _nfp_interpretation(change_k: float) -> str:
+    """Interpret the month-over-month change in nonfarm payrolls (thousands)."""
+    if change_k > 250:
+        return "very_strong_hot_labor_hawkish"
+    if change_k > 150:
+        return "solid_job_growth"
+    if change_k > 75:
+        return "moderate_cooling"
+    if change_k > 0:
+        return "soft_labor_slowing"
+    return "payroll_contraction_recession_risk"
+
+
+def _jolts_change_interpretation(change_k: float) -> str:
+    """Interpret the change in job openings (thousands)."""
+    if change_k > 200:
+        return "openings_rising_labor_demand_firm"
+    if change_k > -200:
+        return "openings_stable"
+    return "openings_falling_labor_demand_weakening"
+
+
+def _labor_tightness_interpretation(ratio: float) -> str:
+    """Interpret job openings per unemployed person (vacancy/unemployment ratio)."""
+    if ratio > 1.5:
+        return "very_tight_strong_wage_pressure_hawkish"
+    if ratio > 1.2:
+        return "tight_labor_market"
+    if ratio > 1.0:
+        return "balanced_slightly_tight"
+    if ratio > 0.8:
+        return "loosening_labor_market"
+    return "slack_labor_weak_dovish"
+
+
+def _claims_interpretation(level: float) -> str:
+    """Interpret the weekly initial jobless-claims level (number of claims)."""
+    if level > 350_000:
+        return "elevated_claims_recession_watch"
+    if level > 300_000:
+        return "rising_claims_labor_softening"
+    if level > 250_000:
+        return "normal_claims"
+    return "low_claims_tight_labor"
+
+
+def _claims_change_interpretation(change: float) -> str:
+    """Interpret the recent change in initial claims (number of claims)."""
+    if change > 20_000:
+        return "claims_rising_fast_deterioration"
+    if change < -20_000:
+        return "claims_falling_fast_strengthening"
+    return "claims_stable"
+
+
+def _wage_growth_interpretation(yoy_pct: float) -> str:
+    """Interpret average-hourly-earnings YoY growth (percent)."""
+    if yoy_pct > 4.5:
+        return "hot_wages_inflationary_hawkish"
+    if yoy_pct > 3.5:
+        return "elevated_wage_growth"
+    if yoy_pct > 3.0:
+        return "moderating_toward_target"
+    return "cooling_wages_disinflationary"
 
 
 # ── Derived rate / inflation fields ───────────────────────────────────────────
@@ -306,7 +384,59 @@ def _compute_derived(results: dict, api_key: str) -> dict[str, Any]:
             derived["credit_spread_20d_change"] = oas_chg
             derived["credit_spread_20d_change_interpretation"] = _credit_spread_change_interpretation(oas_chg)
 
+    derived.update(_compute_labor(results))
     return derived
+
+
+def _yoy(results: dict, series_id: str) -> float | None:
+    entry = results.get(series_id)
+    return entry.get("yoy_pct") if isinstance(entry, dict) else None
+
+
+def _compute_labor(results: dict) -> dict[str, Any]:
+    """Build Tier 2 labor-market derived fields (NFP, JOLTS, claims, wages)."""
+    labor: dict[str, Any] = {}
+
+    # Nonfarm payrolls: the headline number IS the month-over-month change (000s)
+    nfp_level = _latest(results, "PAYEMS")
+    nfp_change = _change_20d(results, "PAYEMS")  # monthly series → MoM change
+    if nfp_level is not None:
+        labor["nfp_level_k"] = nfp_level
+    if nfp_change is not None:
+        labor["nfp_change_mom_k"] = round(nfp_change, 1)
+        labor["nfp_change_interpretation"] = _nfp_interpretation(nfp_change)
+
+    # JOLTS job openings + vacancy/unemployment ratio
+    openings = _latest(results, "JTSJOL")
+    if openings is not None:
+        labor["jolts_openings_k"] = openings
+        openings_chg = _change_20d(results, "JTSJOL")
+        if openings_chg is not None:
+            labor["jolts_openings_change"] = round(openings_chg, 1)
+            labor["jolts_openings_change_interpretation"] = _jolts_change_interpretation(openings_chg)
+        unemployed = _latest(results, "UNEMPLOY")
+        if unemployed and unemployed > 0:
+            ratio = round(openings / unemployed, 3)
+            labor["jolts_openings_per_unemployed"] = ratio
+            labor["labor_tightness_interpretation"] = _labor_tightness_interpretation(ratio)
+
+    # Initial jobless claims (weekly, most timely)
+    claims = _latest(results, "ICSA")
+    if claims is not None:
+        labor["initial_claims"] = claims
+        labor["initial_claims_interpretation"] = _claims_interpretation(claims)
+        claims_chg = _change_20d(results, "ICSA")
+        if claims_chg is not None:
+            labor["initial_claims_20d_change"] = round(claims_chg, 1)
+            labor["initial_claims_change_interpretation"] = _claims_change_interpretation(claims_chg)
+
+    # Wage growth (avg hourly earnings, YoY %)
+    wage_yoy = _yoy(results, "AHETPI")
+    if wage_yoy is not None:
+        labor["wage_growth_yoy"] = wage_yoy
+        labor["wage_growth_interpretation"] = _wage_growth_interpretation(wage_yoy)
+
+    return labor
 
 
 def collect() -> dict[str, Any]:

@@ -585,6 +585,26 @@ def _build_rates_block(macro_data: dict, fed_futures_data: dict) -> str:
     ])
 
 
+def _build_labor_block(macro_data: dict) -> str:
+    """Format the Tier 2 labor-market section for Pass 1."""
+    labor = _pick(
+        macro_data,
+        "nfp_level_k", "nfp_change_mom_k", "nfp_change_interpretation",
+        "jolts_openings_k", "jolts_openings_change", "jolts_openings_change_interpretation",
+        "jolts_openings_per_unemployed", "labor_tightness_interpretation",
+        "initial_claims", "initial_claims_interpretation",
+        "initial_claims_20d_change", "initial_claims_change_interpretation",
+        "wage_growth_yoy", "wage_growth_interpretation",
+    )
+    return (
+        "LABOR MARKET (TIER 2 — payrolls, openings, claims, wages):\n"
+        f"{json.dumps(labor, indent=2)}\n"
+        "Strong payrolls/openings/wages and low claims argue for a tighter "
+        "(hawkish) rate path; weakening labor argues for easing — weigh this in "
+        "both the regime call and rate_regime."
+    )
+
+
 def run_pass1_regime(
     macro_data: dict,
     sentiment_data: dict,
@@ -602,6 +622,7 @@ def run_pass1_regime(
         f"CROSS-ASSET PRICE SUMMARY:\n{json.dumps(price_summary, indent=2)}",
         f"UPCOMING CATALYSTS:\n{json.dumps(calendar_data, indent=2)}",
         _build_rates_block(macro_data, fed_futures_data or {}),
+        _build_labor_block(macro_data),
         _PASS1_SCHEMA,
     ])
     output_path = str(settings.PROMPTS_DIR / f"{date_str}_pass1_regime.txt")

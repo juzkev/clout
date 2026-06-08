@@ -29,6 +29,16 @@ def _mk_obs(latest: float, older: float, n: int = 210, switch: int = 15) -> list
     return obs
 
 
+def _mk_obs_yoy(latest: float, year_ago: float, n: int = 400) -> list[dict]:
+    """Build observations long enough (>365d) for a YoY computation."""
+    base = date(2024, 6, 3)
+    obs = []
+    for i in range(n):
+        d = (base - timedelta(days=i)).isoformat()
+        obs.append({"date": d, "value": str(latest if i < 365 else year_ago)})
+    return obs
+
+
 _SAMPLE_FRED = {
     "DGS10": _mk_obs(4.50, 4.00),          # latest above its ~4.0 SMA → "above"
     "T10YIE": _mk_obs(2.30, 2.30),         # flat breakeven
@@ -41,6 +51,12 @@ _SAMPLE_FRED = {
     "CPIAUCSL": _mk_obs(310.0, 305.0),
     "UNRATE": _mk_obs(4.3, 4.2),
     "VIXCLS": _mk_obs(16.0, 18.0),
+    # Tier 2 labor
+    "PAYEMS": _mk_obs(159180, 159000),     # +180k MoM → solid job growth
+    "JTSJOL": _mk_obs(8000, 8100),         # openings
+    "UNEMPLOY": _mk_obs(6500, 6400),       # → openings/unemployed ≈ 1.23 (tight)
+    "ICSA": _mk_obs(220000, 215000),       # low claims, tight labor
+    "AHETPI": _mk_obs_yoy(30.00, 28.85),   # wage growth ≈ 3.99% YoY
 }
 
 
@@ -150,6 +166,50 @@ def test_derived_fields_present(monkeypatch):
     assert "breakeven_inflation_10y" in out
     assert out["breakeven_inflation_10y"] == pytest.approx(2.30)
     assert "forward_inflation_5y5y" in out
+
+
+# ── 2b. Tier 2 labor-market fields ────────────────────────────────────────────
+
+def test_labor_fields_present(monkeypatch):
+    """NFP, JOLTS, claims, and wage-growth derived fields are computed."""
+    monkeypatch.setattr(fred_collector.settings, "FRED_API_KEY", "testkey")
+    monkeypatch.setattr(
+        fred_collector, "_fetch_observations",
+        lambda series_id, api_key, limit=30: _SAMPLE_FRED.get(series_id, _mk_obs(1.0, 1.0)),
+    )
+
+    out = fred_collector.collect()
+
+    # NFP: +180k MoM → solid
+    assert out["nfp_change_mom_k"] == pytest.approx(180.0)
+    assert out["nfp_change_interpretation"] == "solid_job_growth"
+
+    # JOLTS: openings present + vacancy/unemployment ratio ≈ 1.23 (tight)
+    assert out["jolts_openings_k"] == pytest.approx(8000)
+    assert out["jolts_openings_per_unemployed"] == pytest.approx(8000 / 6500, abs=0.01)
+    assert out["labor_tightness_interpretation"] == "tight_labor_market"
+
+    # Initial claims: 220k → low/tight
+    assert out["initial_claims"] == pytest.approx(220000)
+    assert out["initial_claims_interpretation"] == "low_claims_tight_labor"
+
+    # Wage growth YoY ≈ 3.99%
+    assert out["wage_growth_yoy"] == pytest.approx(3.99, abs=0.05)
+    assert out["wage_growth_interpretation"] == "elevated_wage_growth"
+
+
+def test_labor_block_in_pass1(monkeypatch):
+    """The Pass 1 labor block surfaces the labor fields under a LABOR MARKET header."""
+    block = llm_client._build_labor_block({
+        "nfp_change_mom_k": 180.0,
+        "nfp_change_interpretation": "solid_job_growth",
+        "jolts_openings_per_unemployed": 1.23,
+        "initial_claims": 220000,
+        "wage_growth_yoy": 3.99,
+    })
+    assert "LABOR MARKET" in block
+    assert "solid_job_growth" in block
+    assert "rate_regime" in block  # instructs the model to weigh labor into the rate path
 
 
 # ── 3. rate_regime flows through Pass 1 ───────────────────────────────────────
